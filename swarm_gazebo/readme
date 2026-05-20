@@ -1,0 +1,77 @@
+🧱 1. Build only your swarm packages
+cd ~/ros2_humble
+colcon build --packages-up-to swarm_gazebo --symlink-install
+🔌 2. Source ROS + your workspace
+source /opt/ros/humble/setup.bash
+source ~/ros2_humble/install/setup.bash
+🚀 3. Launch multi-robot simulation
+ros2 launch swarm_gazebo multi_spawn.launch.py
+🔍 4. Verify robots exist (optional)
+ros2 topic list | grep robot
+ros2 node list
+
+
+
+
+Goals (Best next path
+1. Clean up the robot interface
+
+Right now each robot works, but the setup is still a bit rough. Make it cleaner by giving each robot:
+
+odometry topic
+scan topic
+cmd_vel
+a clear robot name / namespace
+
+That makes later mapping and navigation much easier.
+
+2. Add RViz visibility
+
+You want to actually see what each robot sees.
+
+Next, get:
+
+one robot’s lidar visible in RViz
+then all robots
+maybe robot poses too
+
+That helps a lot before SLAM.
+
+3. Do SLAM with one robot first
+
+Before true swarm exploration, make robot1 build a map.
+
+That means:
+
+robot1 + lidar + odometry
+SLAM toolbox
+map visible in RViz
+
+This is the most important next milestone.
+
+4. Save the map
+
+Once one robot can map the environment, save it and confirm you can reload it.
+
+Then you have:
+
+exploration world
+robot
+reusable map
+5. Add navigation to goals
+
+After mapping, make one robot go to selected goals.
+
+Then the behavior becomes:
+
+map
+choose target
+move there
+avoid obstacles while navigating
+6. Only then scale to multi-robot exploration
+
+After one robot works well:
+
+robot2 and robot3 also get scan + odom
+each explores
+later share information or divide areas)
