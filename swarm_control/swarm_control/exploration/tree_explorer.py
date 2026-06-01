@@ -22,6 +22,8 @@ class TreeExplorer(Node):
         self._init_state()
         self._init_ros_interfaces()
 
+        self.became_leader_time_ns = None
+
         self.get_logger().info(f'[{self.robot_name}] tree_explorer started')
 
     def _declare_parameters(self):
@@ -37,6 +39,8 @@ class TreeExplorer(Node):
 
         self.declare_parameter('chain_spacing_m', 1.3)
         self.declare_parameter('formation_tolerance_m', 0.35)
+
+        self.declare_parameter('leader_start_delay_sec', 18.0)
 
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
@@ -54,6 +58,10 @@ class TreeExplorer(Node):
         self.chain_spacing_m = float(self.get_parameter('chain_spacing_m').value)
         self.formation_tolerance_m = float(
             self.get_parameter('formation_tolerance_m').value
+        )
+
+        self.leader_start_delay_sec = float(
+            self.get_parameter('leader_start_delay_sec').value
         )
 
     def _init_state(self):
@@ -107,9 +115,17 @@ class TreeExplorer(Node):
         if msg.robot_name != self.robot_name:
             return
 
+        was_leader = self.is_leader
+
         self.current_role = msg.role
         self.current_leader_id = msg.leader_id
         self.is_leader = msg.role == 'leader' and msg.leader_id == self.robot_name
+
+        if self.is_leader and not was_leader:
+            self.became_leader_time_ns = self.get_clock().now().nanoseconds
+            self.get_logger().info(
+                f'[{self.robot_name}] leader waiting {self.leader_start_delay_sec:.1f}s before exploring'
+            )
 
     def scan_callback(self, msg: LaserScan):
         if not msg.ranges:
@@ -120,12 +136,28 @@ class TreeExplorer(Node):
         self.front_right = sector_avg(msg, -0.65, 0.35)
 
     def control_loop(self):
+        # Non-leaders are controlled by formation_manager/path_follower.
+        # Do not publish stop here.
         if not self.is_leader:
+            return
+
+        if not self._leader_start_delay_done():
+            self._publish_stop()
             return
 
         linear, angular = self._compute_exploration_command()
         self.cmd_pub.publish(make_twist(linear, angular))
 
+
+    def _leader_start_delay_done(self):
+        if self.became_leader_time_ns is None:
+            return False
+
+        elapsed = (
+            self.get_clock().now().nanoseconds - self.became_leader_time_ns
+        ) / 1e9
+
+        return elapsed >= self.leader_start_delay_sec
 
     def _compute_exploration_command(self):
         if self.front < self.front_blocked_distance:

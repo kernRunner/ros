@@ -1,7 +1,3 @@
-import math
-import re
-from typing import Dict, Optional
-
 import rclpy
 from rclpy.node import Node
 
@@ -10,84 +6,93 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 from swarm_interfaces.msg import RobotState
 
-from swarm_control.core.math_utils import normalize_angle, quaternion_to_yaw
+from swarm_control.core.math_utils import quaternion_to_yaw
 
 
 class FormationManager(Node):
+    """
+    Startup gate for the swarm.
+
+    This version intentionally does NOT drive followers into an exact line.
+    Your earlier formation controller made robots cross through each other
+    from the square start layout. Instead, this node waits until the elected
+    leader is known, optionally waits a short time, then publishes
+    /<robot>/formation_ready=True.
+
+    Actual follower motion is handled by path_follower.py.
+    """
+
     def __init__(self):
         super().__init__('formation_manager')
 
-        self.declare_parameter('robot_name', 'robot2')
-        self.declare_parameter('leader_name', 'robot1')
+        self._declare_parameters()
+        self._read_parameters()
+        self._init_state()
+        self._init_ros_interfaces()
+
+        self.get_logger().info(f'[{self.robot_name}] formation_manager started')
+
+    def _declare_parameters(self):
+        self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel_raw')
 
         self.declare_parameter('spawn_x', 0.0)
         self.declare_parameter('spawn_y', 0.0)
 
-        self.declare_parameter('chain_spacing_m', 1.8)
-        self.declare_parameter('slot_index', -1)
+        # Compatibility parameters kept so your launch file can still pass them.
+        self.declare_parameter('slot_spacing_m', 1.4)
+        self.declare_parameter('chain_spacing_m', 1.4)
+        self.declare_parameter('arrival_tolerance_m', 0.25)
+        self.declare_parameter('goal_tolerance_m', 0.25)
+        self.declare_parameter('yaw_tolerance_rad', 0.35)
+        self.declare_parameter('max_linear_speed', 0.06)
+        self.declare_parameter('max_angular_speed', 0.55)
+        self.declare_parameter('linear_gain', 0.35)
+        self.declare_parameter('angular_gain', 1.10)
+        self.declare_parameter('collision_stop_m', 0.35)
+        self.declare_parameter('collision_slow_m', 0.80)
+        self.declare_parameter('staged_formation', True)
+        self.declare_parameter('slot_start_delay_sec', 5.0)
 
-        self.declare_parameter('goal_tolerance_m', 0.12)
-        self.declare_parameter('yaw_tolerance_rad', 0.25)
+        # This is the only behavior this simplified manager uses.
+        self.declare_parameter('post_election_wait_sec', 2.0)
 
-        self.declare_parameter('max_linear_speed', 0.10)
-        self.declare_parameter('max_angular_speed', 0.75)
-
-        self.declare_parameter('linear_gain', 0.45)
-        self.declare_parameter('angular_gain', 1.60)
-
-        self.declare_parameter('collision_stop_m', 0.70)
-        self.declare_parameter('collision_slow_m', 1.10)
-
+    def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
-        self.leader_name = self.get_parameter('leader_name').value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
 
         self.spawn_x = float(self.get_parameter('spawn_x').value)
         self.spawn_y = float(self.get_parameter('spawn_y').value)
 
-        self.chain_spacing_m = float(self.get_parameter('chain_spacing_m').value)
-        self.slot_index = int(self.get_parameter('slot_index').value)
+        self.post_election_wait_sec = float(
+            self.get_parameter('post_election_wait_sec').value
+        )
 
-        self.goal_tolerance_m = float(self.get_parameter('goal_tolerance_m').value)
-        self.yaw_tolerance_rad = float(self.get_parameter('yaw_tolerance_rad').value)
-
-        self.max_linear_speed = float(self.get_parameter('max_linear_speed').value)
-        self.max_angular_speed = float(self.get_parameter('max_angular_speed').value)
-
-        self.linear_gain = float(self.get_parameter('linear_gain').value)
-        self.angular_gain = float(self.get_parameter('angular_gain').value)
-
-        self.collision_stop_m = float(self.get_parameter('collision_stop_m').value)
-        self.collision_slow_m = float(self.get_parameter('collision_slow_m').value)
-
+    def _init_state(self):
         self.world_x = 0.0
         self.world_y = 0.0
         self.yaw = 0.0
 
+        self.current_role = 'follower'
+        self.current_leader_id = ''
+        self.leader_detected_time_ns = None
+
         self.ready = False
-        self.states: Dict[str, RobotState] = {}
+        self.states = {}
 
-        if self.slot_index < 0:
-            self.slot_index = self._index_from_name(self.robot_name)
-
+    def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.ready_pub = self.create_publisher(Bool, 'formation_ready', 10)
 
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
-        self.create_subscription(RobotState, '/swarm/robot_states', self.state_callback, 10)
-
-        self.create_timer(0.1, self.control_loop)
-
-        self.get_logger().info(
-            f'[{self.robot_name}] formation_manager started, slot_index={self.slot_index}'
+        self.create_subscription(
+            RobotState,
+            '/swarm/robot_states',
+            self.state_callback,
+            10,
         )
 
-    def _index_from_name(self, name: str) -> int:
-        match = re.search(r'(\d+)$', name)
-        if not match:
-            return 1
-        return max(0, int(match.group(1)) - 1)
+        self.create_timer(0.1, self.control_loop)
 
     def odom_callback(self, msg: Odometry):
         self.world_x = self.spawn_x + msg.pose.pose.position.x
@@ -97,104 +102,59 @@ class FormationManager(Node):
     def state_callback(self, msg: RobotState):
         self.states[msg.robot_name] = msg
 
-    def control_loop(self):
-        if self.robot_name == self.leader_name:
-            self._set_ready()
-            self._publish_cmd(0.0, 0.0)
+        if msg.robot_name != self.robot_name:
             return
 
-        leader = self.states.get(self.leader_name)
-        if leader is None or not leader.active:
-            self._publish_cmd(0.0, 0.0)
-            return
+        old_leader = self.current_leader_id
 
-        tx, ty, tyaw = self._slot_pose(leader)
+        self.current_role = msg.role
+        self.current_leader_id = msg.leader_id
 
-        dx = tx - self.world_x
-        dy = ty - self.world_y
-        distance = math.hypot(dx, dy)
-
-        yaw_error = normalize_angle(tyaw - self.yaw)
-
-        if distance < self.goal_tolerance_m and abs(yaw_error) < self.yaw_tolerance_rad:
-            self._set_ready()
-            self._publish_cmd(0.0, 0.0)
-            return
-
-        linear, angular = self._go_to(tx, ty, tyaw)
-
-        scale = self._collision_speed_scale()
-        linear *= scale
-
-        if scale <= 0.01:
-            linear = 0.0
-
-        self._publish_cmd(linear, angular)
-
-    def _slot_pose(self, leader: RobotState):
-        # Line behind leader along leader yaw.
-        # slot_index: robot2=1, robot3=2, ...
-        yaw = getattr(leader, 'yaw', 0.0)
-
-        tx = leader.x - self.slot_index * self.chain_spacing_m * math.cos(yaw)
-        ty = leader.y - self.slot_index * self.chain_spacing_m * math.sin(yaw)
-
-        return tx, ty, yaw
-
-    def _go_to(self, tx: float, ty: float, target_yaw: float):
-        dx = tx - self.world_x
-        dy = ty - self.world_y
-
-        distance = math.hypot(dx, dy)
-
-        if distance > self.goal_tolerance_m:
-            target_heading = math.atan2(dy, dx)
-            heading_error = normalize_angle(target_heading - self.yaw)
-
-            linear = min(self.linear_gain * distance, self.max_linear_speed)
-
-            if abs(heading_error) > 1.2:
-                linear = 0.0
-            elif abs(heading_error) > 0.8:
-                linear *= 0.25
-            elif abs(heading_error) > 0.45:
-                linear *= 0.55
-
-            angular = self.angular_gain * heading_error
-        else:
-            linear = 0.0
-            angular = self.angular_gain * normalize_angle(target_yaw - self.yaw)
-
-        angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
-        return linear, angular
-
-    def _collision_speed_scale(self):
-        nearest = 999.0
-
-        for name, robot in self.states.items():
-            if name == self.robot_name or not robot.active:
-                continue
-
-            d = math.hypot(robot.x - self.world_x, robot.y - self.world_y)
-            nearest = min(nearest, d)
-
-        if nearest < self.collision_stop_m:
-            return 0.0
-
-        if nearest < self.collision_slow_m:
-            return (nearest - self.collision_stop_m) / (
-                self.collision_slow_m - self.collision_stop_m
+        if self.current_leader_id and self.current_leader_id != old_leader:
+            self.leader_detected_time_ns = self.get_clock().now().nanoseconds
+            self.ready = False
+            self.get_logger().info(
+                f'[{self.robot_name}] detected leader: {self.current_leader_id}'
             )
 
-        return 1.0
+    def control_loop(self):
+        """
+        Do not drive the robot here.
+
+        This prevents command fighting with path_follower/tree_explorer.
+        It only publishes formation_ready after a leader exists and the
+        short startup delay is finished.
+        """
+        if not self.current_leader_id:
+            self._publish_ready(False)
+            return
+
+        if not self._post_election_wait_done():
+            self._publish_ready(False)
+            return
+
+        self._set_ready()
+
+    def _post_election_wait_done(self) -> bool:
+        if self.leader_detected_time_ns is None:
+            return False
+
+        elapsed = (
+            self.get_clock().now().nanoseconds - self.leader_detected_time_ns
+        ) / 1e9
+
+        return elapsed >= self.post_election_wait_sec
 
     def _set_ready(self):
         if not self.ready:
             self.ready = True
             self.get_logger().info(f'[{self.robot_name}] formation_ready=True')
 
+        self._publish_ready(True)
+
+    def _publish_ready(self, value: bool):
         msg = Bool()
-        msg.data = True
+        msg.data = value
         self.ready_pub.publish(msg)
 
     def _publish_cmd(self, linear: float, angular: float):
@@ -213,6 +173,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # One final stop is okay during shutdown.
         node._publish_cmd(0.0, 0.0)
         node.destroy_node()
         if rclpy.ok():
