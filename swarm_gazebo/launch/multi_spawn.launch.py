@@ -14,15 +14,22 @@ def generate_launch_description():
     world_file = os.path.join(gazebo_pkg, 'worlds', f'{world_name}.sdf')
     model_file = os.path.join(gazebo_pkg, 'models', 'swarm_bot.sdf')
 
+    # robots = [
+    #     # FRONT ROW — leader elected from here
+    #     {'name': 'robot1', 'x': '1.2', 'y':  '0.6', 'z': '0.0'},
+    #     {'name': 'robot2', 'x': '1.2', 'y': '-0.6', 'z': '0.0'},
+    #     # SECOND ROW
+    #     {'name': 'robot3', 'x': '0.0', 'y':  '0.6', 'z': '0.0'},
+    #     {'name': 'robot4', 'x': '0.0', 'y': '-0.6', 'z': '0.0'},
+    #     # {'name': 'robot5', 'x': '-1.2', 'y':  '0.6', 'z': '0.0'},
+    #     # {'name': 'robot6', 'x': '-1.2', 'y': '-0.6', 'z': '0.0'},
+    # ]
+
     robots = [
-        # FRONT ROW — leader elected from here
-        {'name': 'robot1', 'x': '1.2', 'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot2', 'x': '1.2', 'y': '-0.6', 'z': '0.0'},
-        # SECOND ROW
-        {'name': 'robot3', 'x': '0.0', 'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot4', 'x': '0.0', 'y': '-0.6', 'z': '0.0'},
-        # {'name': 'robot5', 'x': '-1.2', 'y':  '0.6', 'z': '0.0'},
-        # {'name': 'robot6', 'x': '-1.2', 'y': '-0.6', 'z': '0.0'},
+        {'name': 'robot1', 'x': '2.0',  'y':  '1.0', 'z': '0.0'},
+        {'name': 'robot2', 'x': '2.0',  'y': '-1.0', 'z': '0.0'},
+        {'name': 'robot3', 'x': '0.0',  'y':  '1.0', 'z': '0.0'},
+        {'name': 'robot4', 'x': '0.0',  'y': '-1.0', 'z': '0.0'},
     ]
 
     active_robots = ['robot1', 'robot2', 'robot3', 'robot4']
@@ -198,16 +205,10 @@ def generate_launch_description():
                 executable='formation_manager',
                 namespace=ns, name='formation_manager', output='screen',
                 parameters=[
-                    {'use_sim_time': True}, {'robot_name': ns},
-                    {'spawn_x': spawn_x}, {'spawn_y': spawn_y},
-                    {'slot_spacing_m': 1.8},
-                    {'arrival_tolerance_m': 0.20},
-                    {'max_linear_speed': 0.10},
-                    {'max_angular_speed': 0.75},
-                    {'linear_gain': 0.50},
-                    {'angular_gain': 1.40},
-                    # Time to wait after election before first robot moves.
-                    # Needs to be > startup_election_delay_sec in swarm_member.
+                    {'use_sim_time': True},
+                    {'robot_name': ns},
+                    {'spawn_x': spawn_x},
+                    {'spawn_y': spawn_y},
                     {'post_election_wait_sec': 1.5},
                 ]
             )
@@ -226,15 +227,19 @@ def generate_launch_description():
                     {'cmd_vel_topic': 'cmd_vel_raw'},
                     {'path_topic': '/swarm/leader_path'},
                     {'spawn_x': spawn_x}, {'spawn_y': spawn_y},
-                    {'chain_spacing_m': 1.8},
-                    {'chain_stop_distance_m': 0.65},
-                    {'chain_slow_distance_m': 1.10},
                     {'chain_missing_speed_scale': 0.5},
-                    {'goal_tolerance_m': 0.08},
-                    {'max_linear_speed': 0.12},
-                    {'max_angular_speed': 0.80},
-                    {'linear_gain': 0.55},
-                    {'angular_gain': 1.50},
+                    {'chain_spacing_m': 1.4},
+                    {'follow_mode': 'predecessor'},
+                    {'desired_follow_distance_m': 1.25},
+                    {'follow_deadband_m': 0.30},
+                    {'lateral_follow_offset_m': 0.0},
+                    {'chain_stop_distance_m': 0.45},
+                    {'chain_slow_distance_m': 0.85},
+                    {'goal_tolerance_m': 0.18},
+                    {'max_linear_speed': 0.08},
+                    {'max_angular_speed': 0.70},
+                    {'linear_gain': 0.35},
+                    {'angular_gain': 1.20},
                     {'lookahead_m': 0.0},
                     {'startup_delay_per_slot_sec': 1.5},
                 ]
@@ -255,6 +260,7 @@ def generate_launch_description():
                     {'spawn_x': spawn_x}, {'spawn_y': spawn_y},
                     {'chain_spacing_m': 1.8},
                     {'formation_tolerance_m': 0.35},
+                    {'leader_start_delay_sec': 25.0},
                 ]
             )
         )
