@@ -51,7 +51,12 @@ def generate_launch_description():
             executable='parameter_bridge',
             name='clock_bridge',
             output='screen',
-            arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+            arguments=[
+                '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+                '--ros-args',
+                '-p', 'qos_overrides./clock.publisher.reliability:=best_effort',
+                '-p', 'qos_overrides./clock.publisher.depth:=1',
+            ],
         )
     )
 
@@ -300,28 +305,28 @@ def generate_launch_description():
             )
         )
 
-        # SLAM toolbox — leader only
-        if ns == 'robot1':
-            actions.append(
-                Node(
-                    package='slam_toolbox',
-                    executable='async_slam_toolbox_node',
-                    namespace=ns, name='slam_toolbox', output='screen',
-                    parameters=[{
-                        'use_sim_time': True,
-                        'mode': 'mapping',
-                        'transform_publish_period': 0.1,
-                        'odom_frame': f'{ns}/odom',
-                        'base_frame': f'{ns}/chassis',
-                        'map_frame': f'{ns}/map',
-                        'scan_topic': 'scan',
-                        'map_name': 'map',
-                        'resolution': 0.08,
-                        'minimum_travel_distance': 0.10,
-                        'minimum_travel_heading': 0.10,
-                    }],
-                    remappings=[('scan', 'scan')]
-                )
-            )
+        # SLAM toolbox — leader only onyl for testing commented out
+        # if ns == 'robot1':
+        #     actions.append(
+        #         Node(
+        #             package='slam_toolbox',
+        #             executable='async_slam_toolbox_node',
+        #             namespace=ns, name='slam_toolbox', output='screen',
+        #             parameters=[{
+        #                 'use_sim_time': True,
+        #                 'mode': 'mapping',
+        #                 'transform_publish_period': 0.1,
+        #                 'odom_frame': f'{ns}/odom',
+        #                 'base_frame': f'{ns}/chassis',
+        #                 'map_frame': f'{ns}/map',
+        #                 'scan_topic': 'scan',
+        #                 'map_name': 'map',
+        #                 'resolution': 0.08,
+        #                 'minimum_travel_distance': 0.10,
+        #                 'minimum_travel_heading': 0.10,
+        #             }],
+        #             remappings=[('scan', 'scan')]
+        #         )
+        #     )
 
     return LaunchDescription(actions)
