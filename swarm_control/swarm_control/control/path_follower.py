@@ -296,26 +296,17 @@ class PathFollower(Node):
         if distance <= max_distance:
             return None
 
-        yaw = predecessor.yaw
-
-        back_x = math.cos(yaw)
-        back_y = math.sin(yaw)
-
-        side_x = -math.sin(yaw)
-        side_y = math.cos(yaw)
-
-        tx = (
-            predecessor.x
-            - self.desired_follow_distance_m * back_x
-            + self.lateral_follow_offset_m * side_x
-        )
-        ty = (
-            predecessor.y
-            - self.desired_follow_distance_m * back_y
-            + self.lateral_follow_offset_m * side_y
+        # Direction from follower to predecessor.
+        angle_to_predecessor = math.atan2(
+            predecessor.y - self.world_y,
+            predecessor.x - self.world_x,
         )
 
-        return tx, ty, yaw
+        # Target is between follower and predecessor.
+        tx = predecessor.x - self.desired_follow_distance_m * math.cos(angle_to_predecessor)
+        ty = predecessor.y - self.desired_follow_distance_m * math.sin(angle_to_predecessor)
+
+        return tx, ty, angle_to_predecessor
 
     # ------------------------------------------------------------------
     # Old path-following mode, kept as optional fallback
@@ -418,13 +409,16 @@ class PathFollower(Node):
 
         linear = min(self.linear_gain * distance, self.max_linear_speed)
 
-        # Slow down sharply when not facing the target.
-        if abs(heading_error) > 1.25:
-            linear = 0.0
-        elif abs(heading_error) > 0.85:
-            linear *= 0.25
-        elif abs(heading_error) > 0.50:
-            linear *= 0.60
+        # Do not fully stop when the target is to the side.
+        # Move slowly while turning so the chain can bend around corners.
+        abs_error = abs(heading_error)
+
+        if abs_error > 1.40:
+            linear *= 0.20
+        elif abs_error > 1.00:
+            linear *= 0.35
+        elif abs_error > 0.60:
+            linear *= 0.65
 
         angular = self.angular_gain * heading_error
         angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))

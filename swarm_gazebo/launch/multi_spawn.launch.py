@@ -26,10 +26,10 @@ def generate_launch_description():
     # ]
 
     robots = [
-        {'name': 'robot1', 'x': '2.0',  'y':  '1.0', 'z': '0.0'},
-        {'name': 'robot2', 'x': '2.0',  'y': '-1.0', 'z': '0.0'},
-        {'name': 'robot3', 'x': '0.0',  'y':  '1.0', 'z': '0.0'},
-        {'name': 'robot4', 'x': '0.0',  'y': '-1.0', 'z': '0.0'},
+        {'name': 'robot1', 'x': '1.2', 'y':  '0.6', 'z': '0.0'},
+        {'name': 'robot2', 'x': '1.2', 'y': '-0.6', 'z': '0.0'},
+        {'name': 'robot3', 'x': '0.0', 'y':  '0.6', 'z': '0.0'},
+        {'name': 'robot4', 'x': '0.0', 'y': '-0.6', 'z': '0.0'},
     ]
 
     active_robots = ['robot1', 'robot2', 'robot3', 'robot4']
@@ -235,16 +235,16 @@ def generate_launch_description():
                     {'chain_missing_speed_scale': 0.5},
                     {'chain_spacing_m': 1.4},
                     {'follow_mode': 'predecessor'},
-                    {'desired_follow_distance_m': 1.25},
-                    {'follow_deadband_m': 0.30},
                     {'lateral_follow_offset_m': 0.0},
-                    {'chain_stop_distance_m': 0.45},
-                    {'chain_slow_distance_m': 0.85},
+                    {'desired_follow_distance_m': 0.75},
+                    {'follow_deadband_m': 0.25},
+                    {'chain_stop_distance_m': 0.30},
+                    {'chain_slow_distance_m': 0.60},
                     {'goal_tolerance_m': 0.18},
-                    {'max_linear_speed': 0.08},
-                    {'max_angular_speed': 0.70},
-                    {'linear_gain': 0.35},
-                    {'angular_gain': 1.20},
+                    {'max_linear_speed': 0.10},
+                    {'max_angular_speed': 1.00},
+                    {'angular_gain': 1.60},
+                    {'linear_gain': 0.4},
                     {'lookahead_m': 0.0},
                     {'startup_delay_per_slot_sec': 1.5},
                 ]
@@ -260,12 +260,12 @@ def generate_launch_description():
                 parameters=[
                     {'use_sim_time': True}, {'robot_name': ns},
                     {'cmd_vel_topic': 'cmd_vel_raw'},
-                    {'forward_speed': 0.18}, {'turn_speed': 0.75},
+                    {'forward_speed': 0.12}, {'turn_speed': 0.65},
                     {'front_blocked_distance': 0.85},
                     {'spawn_x': spawn_x}, {'spawn_y': spawn_y},
-                    {'chain_spacing_m': 1.8},
+                    {'chain_spacing_m': 0.9},
                     {'formation_tolerance_m': 0.35},
-                    {'leader_start_delay_sec': 25.0},
+                    {'leader_start_delay_sec': 8.0},
                 ]
             )
         )
