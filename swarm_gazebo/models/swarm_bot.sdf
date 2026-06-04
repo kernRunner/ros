@@ -3,7 +3,20 @@
   <model name="swarm_bot">
     <pose>0 0 0.06 0 0 0</pose>
 
-    <!-- Main body -->
+    <!--
+      Enhanced alignment-debug version.
+
+      Important visual conventions:
+        - Green sphere  = exact chassis origin used by odom/controller
+        - White line    = centerline of robot, x-axis direction
+        - Red front     = front of robot
+        - Blue rear     = rear of robot
+        - Yellow side bars show true left/right width
+
+      If green spheres line up but boxes look offset, the controller is aligned
+      and the camera/body shape is misleading.
+    -->
+
     <link name="chassis">
       <pose>0 0 0.06 0 0 0</pose>
 
@@ -19,6 +32,7 @@
         </inertia>
       </inertial>
 
+      <!-- Main centered collision body -->
       <collision name="collision">
         <geometry>
           <box>
@@ -27,7 +41,7 @@
         </geometry>
       </collision>
 
-      <!-- Main chassis body -->
+      <!-- Main centered chassis body -->
       <visual name="visual_body">
         <geometry>
           <box>
@@ -41,58 +55,129 @@
         </material>
       </visual>
 
-      <!-- FRONT marker: bright red strip -->
+      <!-- Exact controller/odom origin marker -->
+      <visual name="origin_marker">
+        <pose>0 0 0.105 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.032</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <ambient>0.0 1.0 0.0 1</ambient>
+          <diffuse>0.0 1.0 0.0 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+
+      <!-- Long white centerline on top of the robot.
+           This shows the actual x-axis/yaw direction. -->
+      <visual name="top_centerline">
+        <pose>0 0 0.096 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.31 0.012 0.008</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1.0 1.0 1.0 1</ambient>
+          <diffuse>1.0 1.0 1.0 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- Cross line through the origin.
+           This makes sideways visual offsets obvious. -->
+      <visual name="top_crossline">
+        <pose>0 0 0.099 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.012 0.22 0.008</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.0 1.0 0.0 1</ambient>
+          <diffuse>0.0 1.0 0.0 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- FRONT marker: red strip, centered across width -->
       <visual name="front_marker">
-        <pose>0.135 0 0.035 0 0 0</pose>
+        <pose>0.145 0 0.095 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.03 0.18 0.01</size>
+            <size>0.025 0.20 0.010</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.80 0.10 0.10 1</ambient>
-          <diffuse>0.95 0.15 0.15 1</diffuse>
-          <specular>0.10 0.10 0.10 1</specular>
+          <ambient>0.90 0.05 0.05 1</ambient>
+          <diffuse>1.00 0.10 0.10 1</diffuse>
         </material>
       </visual>
 
-      <!-- BACK marker: blue strip -->
+      <!-- BACK marker: blue strip, centered across width -->
       <visual name="rear_marker">
-        <pose>-0.135 0 0.035 0 0 0</pose>
+        <pose>-0.145 0 0.095 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.03 0.18 0.01</size>
+            <size>0.025 0.20 0.010</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.10 0.20 0.70 1</ambient>
-          <diffuse>0.15 0.30 0.90 1</diffuse>
-          <specular>0.10 0.10 0.10 1</specular>
+          <ambient>0.05 0.10 0.90 1</ambient>
+          <diffuse>0.10 0.20 1.00 1</diffuse>
         </material>
       </visual>
 
-      <!-- Arrow-like front nose -->
-      <visual name="front_nose">
-        <pose>0.16 0 0.01 0 0 0</pose>
+      <!-- Front arrow head. It is symmetric in Y, so it should not look side-offset. -->
+      <visual name="front_arrow_stem">
+        <pose>0.175 0 0.097 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.02 0.08 0.02</size>
+            <size>0.050 0.045 0.010</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.90 0.50 0.10 1</ambient>
-          <diffuse>1.00 0.60 0.10 1</diffuse>
-          <specular>0.10 0.10 0.10 1</specular>
+          <ambient>1.0 0.55 0.0 1</ambient>
+          <diffuse>1.0 0.65 0.0 1</diffuse>
         </material>
       </visual>
 
-      <!-- Lidar housing -->
+      <!-- Left and right yellow side bars. These make true body width visible. -->
+      <visual name="left_side_bar">
+        <pose>0 0.105 0.092 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.30 0.010 0.010</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1.0 0.9 0.0 1</ambient>
+          <diffuse>1.0 0.9 0.0 1</diffuse>
+        </material>
+      </visual>
+
+      <visual name="right_side_bar">
+        <pose>0 -0.105 0.092 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.30 0.010 0.010</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1.0 0.9 0.0 1</ambient>
+          <diffuse>1.0 0.9 0.0 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- Centered lidar housing.
+           Moved from x=0.10 to x=0.0 so the robot no longer looks front-heavy.
+           The sensor is also centered below. -->
       <visual name="lidar_visual">
-        <pose>0.10 0 0.12 0 0 0</pose>
+        <pose>0 0 0.135 0 0 0</pose>
         <geometry>
           <cylinder>
-            <radius>0.03</radius>
-            <length>0.03</length>
+            <radius>0.030</radius>
+            <length>0.030</length>
           </cylinder>
         </geometry>
         <material>
@@ -102,9 +187,8 @@
         </material>
       </visual>
 
-      <!-- Lidar top cap -->
       <visual name="lidar_cap">
-        <pose>0.10 0 0.138 0 0 0</pose>
+        <pose>0 0 0.153 0 0 0</pose>
         <geometry>
           <cylinder>
             <radius>0.018</radius>
@@ -119,7 +203,7 @@
       </visual>
 
       <sensor name="lidar" type="gpu_lidar">
-        <pose>0.10 0 0.12 0 0 0</pose>
+        <pose>0 0 0.135 0 0 0</pose>
         <update_rate>5</update_rate>
         <ray>
           <scan>
@@ -237,7 +321,6 @@
       </visual>
     </link>
 
-    <!-- Left wheel joint -->
     <joint name="left_wheel_joint" type="revolute">
       <parent>chassis</parent>
       <child>left_wheel</child>
@@ -253,7 +336,6 @@
       </axis>
     </joint>
 
-    <!-- Right wheel joint -->
     <joint name="right_wheel_joint" type="revolute">
       <parent>chassis</parent>
       <child>right_wheel</child>

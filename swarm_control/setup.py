@@ -48,6 +48,7 @@ setup(
 
             'tree_explorer = swarm_control.exploration.tree_explorer:main',
             'breadcrumb_manager = swarm_control.exploration.breadcrumb_manager:main',
+            'line_alignment_monitor = swarm_control.swarm.line_alignment_monitor:main',
         ],
     },
 )

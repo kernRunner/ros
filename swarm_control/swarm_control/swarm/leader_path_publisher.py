@@ -62,7 +62,7 @@ class LeaderPathPublisher(Node):
         )
 
         self.path_pub = self.create_publisher(Path, self.path_topic, 10)
-        self.timer = self.create_timer(0.2, self.publish_path)
+        self.timer = self.create_timer(0.1, self.publish_path)
 
     def state_callback(self, msg: RobotState):
         if msg.robot_name != self.robot_name:
@@ -84,8 +84,35 @@ class LeaderPathPublisher(Node):
         x, y, yaw = self._world_pose_from_odom(msg)
 
         if self._should_append_pose(x, y, yaw):
-            self._append_pose(msg.header.stamp, x, y, yaw)
+            self._append_interpolated_pose(msg.header.stamp, x, y, yaw)
             self._remember_last_pose(x, y, yaw)
+
+    def _append_interpolated_pose(self, stamp, x: float, y: float, yaw: float):
+        # First point: append directly.
+        if self.last_x is None:
+            self._append_pose(stamp, x, y, yaw)
+            return
+
+        dx = x - self.last_x
+        dy = y - self.last_y
+        distance = math.hypot(dx, dy)
+
+        yaw_delta = normalize_angle(yaw - self.last_yaw)
+
+        # Keep path points dense enough for smooth corner following.
+        max_step = max(0.02, self.append_distance)
+        steps_by_distance = max(1, int(math.ceil(distance / max_step)))
+        steps_by_yaw = max(1, int(math.ceil(abs(yaw_delta) / max(0.02, self.append_yaw_delta))))
+        steps = max(steps_by_distance, steps_by_yaw)
+
+        for i in range(1, steps + 1):
+            ratio = i / steps
+
+            ix = self.last_x + ratio * dx
+            iy = self.last_y + ratio * dy
+            iyaw = normalize_angle(self.last_yaw + ratio * yaw_delta)
+
+            self._append_pose(stamp, ix, iy, iyaw)
 
     def publish_path(self):
         if not self.is_leader:

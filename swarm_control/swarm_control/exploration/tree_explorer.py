@@ -1,5 +1,6 @@
 import math
 import re
+from swarm_control.core.math_utils import quaternion_to_yaw, normalize_angle
 
 import rclpy
 from rclpy.node import Node
@@ -10,7 +11,6 @@ from sensor_msgs.msg import LaserScan
 from swarm_interfaces.msg import RobotState
 
 from swarm_control.core.cmd_utils import make_twist
-from swarm_control.core.math_utils import quaternion_to_yaw
 from swarm_control.core.scan_utils import sector_min, sector_avg
 
 
@@ -47,6 +47,18 @@ class TreeExplorer(Node):
         self.declare_parameter('leader_max_chain_gap_m', 2.0)
         self.declare_parameter('leader_wait_turn_allowed', True)
 
+        self.declare_parameter('side_clearance_distance', 0.75)
+        self.declare_parameter('side_avoid_turn_gain', 0.35)
+
+        self.declare_parameter('preferred_heading_deg', 90.0)
+        self.declare_parameter('heading_gain', 0.9)
+        self.declare_parameter('max_heading_turn', 0.45)
+
+        self.declare_parameter('obstacle_escape_enabled', True)
+        self.declare_parameter('escape_front_clear_distance', 1.60)
+        self.declare_parameter('escape_rejoin_heading_error_deg', 25.0)
+        self.declare_parameter('escape_min_time_sec', 2.0)
+
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
@@ -82,6 +94,41 @@ class TreeExplorer(Node):
             self.get_parameter('leader_wait_turn_allowed').value
         )
 
+        self.side_clearance_distance = float(
+            self.get_parameter('side_clearance_distance').value
+        )
+        self.side_avoid_turn_gain = float(
+            self.get_parameter('side_avoid_turn_gain').value
+        )
+
+        self.preferred_heading_deg = float(
+            self.get_parameter('preferred_heading_deg').value
+        )
+        self.preferred_heading = math.radians(self.preferred_heading_deg)
+
+        self.heading_gain = float(
+            self.get_parameter('heading_gain').value
+        )
+        self.max_heading_turn = float(
+            self.get_parameter('max_heading_turn').value
+        )
+
+        self.obstacle_escape_enabled = bool(
+            self.get_parameter('obstacle_escape_enabled').value
+        )
+
+        self.escape_front_clear_distance = float(
+            self.get_parameter('escape_front_clear_distance').value
+        )
+
+        self.escape_rejoin_heading_error_deg = float(
+            self.get_parameter('escape_rejoin_heading_error_deg').value
+        )
+
+        self.escape_min_time_sec = float(
+            self.get_parameter('escape_min_time_sec').value
+        )
+
     def _init_state(self):
         self.x = 0.0
         self.y = 0.0
@@ -99,6 +146,14 @@ class TreeExplorer(Node):
 
         self.became_leader_time_ns = None
         self.last_chain_status_log_ns = 0
+
+        self.locked_chain_order = []
+
+        self.left = float('inf')
+        self.right = float('inf')
+
+        self.escape_mode = False
+        self.escape_start_ns = 0
 
     def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(
@@ -153,9 +208,12 @@ class TreeExplorer(Node):
         if not msg.ranges:
             return
 
-        self.front = sector_min(msg, 0.0, 0.25)
-        self.front_left = sector_avg(msg, 0.65, 0.35)
-        self.front_right = sector_avg(msg, -0.65, 0.35)
+        self.front = sector_min(msg, 0.0, 0.35)
+        self.front_left = sector_avg(msg, 0.65, 0.45)
+        self.front_right = sector_avg(msg, -0.65, 0.45)
+
+        self.left = sector_min(msg, math.pi / 2.0, 0.55)
+        self.right = sector_min(msg, -math.pi / 2.0, 0.55)
 
     def control_loop(self):
         # Non-leaders are controlled by path_follower.
@@ -192,10 +250,54 @@ class TreeExplorer(Node):
         return elapsed >= self.leader_start_delay_sec
 
     def _compute_exploration_command(self):
+        heading_error = normalize_angle(self.preferred_heading - self.yaw)
+
         if self.front < self.front_blocked_distance:
+            if self.obstacle_escape_enabled:
+                self.escape_mode = True
+                self.escape_start_ns = self.get_clock().now().nanoseconds
+
             return self._turn_toward_open_space()
 
-        return self.forward_speed, 0.0
+        if self.obstacle_escape_enabled and self.escape_mode:
+            elapsed = (self.get_clock().now().nanoseconds - self.escape_start_ns) / 1e9
+
+            heading_error_ok = abs(heading_error) < math.radians(
+                self.escape_rejoin_heading_error_deg
+            )
+
+            front_clear = self.front > self.escape_front_clear_distance
+
+            if elapsed >= self.escape_min_time_sec and front_clear and heading_error_ok:
+                self.escape_mode = False
+            else:
+                # While escaping, do not force north.
+                linear = min(self.forward_speed, 0.045)
+
+                if self.left < self.side_clearance_distance:
+                    return linear, -self.side_avoid_turn_gain
+
+                if self.right < self.side_clearance_distance:
+                    return linear, self.side_avoid_turn_gain
+
+                # Continue gently in current direction.
+                return linear, 0.0
+
+        angular = self.heading_gain * heading_error
+        angular = max(-self.max_heading_turn, min(self.max_heading_turn, angular))
+
+        linear = self.forward_speed
+
+        if self.left < self.side_clearance_distance:
+            linear = min(linear, 0.045)
+            angular -= self.side_avoid_turn_gain
+
+        if self.right < self.side_clearance_distance:
+            linear = min(linear, 0.045)
+            angular += self.side_avoid_turn_gain
+
+        return linear, angular
+
 
     def _turn_toward_open_space(self):
         if self.front_left >= self.front_right:

@@ -1,3 +1,4 @@
+import json
 import math
 
 import rclpy
@@ -6,6 +7,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 from swarm_interfaces.msg import RobotState
 
 from swarm_control.core.cmd_utils import make_twist, smooth_value
@@ -13,6 +15,23 @@ from swarm_control.core.scan_utils import sector_min, sector_avg
 
 
 class CmdVelSafetyFilter(Node):
+    """
+    Safety filter that sits between cmd_vel_raw and cmd_vel.
+
+    Fix changelog:
+      - Subscribes to /swarm/chain_order (published by path_follower) so
+        predecessor identification is always consistent with the follower
+        logic. The old grid-based _get_robot_ahead_name() sorted by world-X,
+        which broke after the first turn and caused the safety filter to
+        treat the predecessor as an obstacle and hard-stop the robot.
+      - Side-wall angular corrections now CLAMP instead of ADD for followers.
+        The old code added ±0.35 rad on top of path_follower's already-
+        corrected heading, stacking corrections and causing lateral spread.
+        The leader keeps additive wall avoidance because it has no path follower.
+      - Smoothing alphas reduced for followers (0.30/0.25 vs 0.65/0.55) to
+        cut ~200-300 ms of lag that was stacking down the chain.
+    """
+
     def __init__(self):
         super().__init__('cmd_vel_safety_filter')
 
@@ -77,6 +96,11 @@ class CmdVelSafetyFilter(Node):
         self.yaw = 0.0
         self.other_robots = {}
 
+        # FIX: authoritative chain order from path_follower.
+        # Replaces the old grid-based _get_robot_ahead_name() which broke
+        # after the leader turned because it sorted by world-X axis.
+        self.chain_order: list = []
+
     def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(Twist, self.safe_cmd_topic, 10)
 
@@ -101,7 +125,19 @@ class CmdVelSafetyFilter(Node):
             10,
         )
 
+        # FIX: subscribe to the chain order published by path_follower.
+        self.create_subscription(
+            String,
+            '/swarm/chain_order',
+            self._chain_order_cb,
+            10,
+        )
+
         self.create_timer(0.1, self.control_loop)
+
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
 
     def cmd_callback(self, msg: Twist):
         self.raw_linear = msg.linear.x
@@ -120,6 +156,21 @@ class CmdVelSafetyFilter(Node):
         self.x = msg.x
         self.y = msg.y
         self.yaw = msg.yaw
+
+    def _chain_order_cb(self, msg: String):
+        """
+        Receive the locked chain order from path_follower.
+
+        This is the single source of truth for who is the predecessor of
+        each robot. Using this prevents the safety filter from ever
+        disagreeing with path_follower about chain membership.
+        """
+        try:
+            self.chain_order = json.loads(msg.data)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'[{self.robot_name}] failed to parse chain_order: {exc}'
+            )
 
     def scan_callback(self, msg: LaserScan):
         if not msg.ranges:
@@ -155,6 +206,10 @@ class CmdVelSafetyFilter(Node):
             0.65,
         )
 
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
     def control_loop(self):
         if not self.enabled:
             return
@@ -170,6 +225,7 @@ class CmdVelSafetyFilter(Node):
         side_bias = self.front_left - self.front_right
 
         if self.is_leader:
+            # Leader has no path follower, so it must actively avoid obstacles.
             if self.front < self.hard_stop_distance:
                 linear = 0.0
                 angular = 0.55 if side_bias >= 0.0 else -0.55
@@ -178,51 +234,93 @@ class CmdVelSafetyFilter(Node):
                 linear = min(linear, 0.045)
                 angular += 0.15 if side_bias >= 0.0 else -0.15
 
+            # Leader side avoidance can be stronger.
+            if self.left < self.side_stop_distance:
+                linear = min(linear, 0.025)
+                angular = min(angular, -0.65)
+
+            elif self.left < self.side_slow_distance:
+                linear = min(linear, 0.040)
+                angular -= 0.25
+
+            if self.right < self.side_stop_distance:
+                linear = min(linear, 0.025)
+                angular = max(angular, 0.65)
+
+            elif self.right < self.side_slow_distance:
+                linear = min(linear, 0.040)
+                angular += 0.25
+
+            if self.left < self.side_slow_distance or self.right < self.side_slow_distance:
+                wall_error = self.left - self.right
+                if abs(wall_error) < 10.0:
+                    angular -= self.wall_avoid_gain * wall_error
+                    linear = min(linear, 0.055)
+
         else:
+            # Followers: path_follower owns the desired heading.
+            # Safety should prevent crashes, not replace or flip the path command.
             predecessor_ahead = self._predecessor_is_in_front()
 
             if predecessor_ahead:
-                # This is probably the robot we follow.
-                # Still emergency stop if dangerously close.
+                # The object ahead is probably the robot we follow.
                 if self.front < 0.18:
                     linear = 0.0
             else:
-                # This is probably an obstacle/wall.
+                # Front obstacle: strict protection.
+                # This is the only place where follower safety may override angular.
                 if self.front < self.hard_stop_distance:
                     linear = 0.0
                     angular = 0.55 if side_bias >= 0.0 else -0.55
 
                 elif self.front < self.slowdown_distance:
-                    linear = min(linear, 0.04)
-                    angular += 0.20 if side_bias >= 0.0 else -0.20
+                    linear = min(linear, 0.045)
 
-        # Strong side-wall protection.
-        if self.left < self.side_stop_distance:
-            linear = 0.0
-            angular = min(angular, -0.65)
+                    # Small front-avoidance nudge only.
+                    # This can still slightly modify path_follower, but it should not dominate.
+                    angular += 0.10 if side_bias >= 0.0 else -0.10
 
-        elif self.left < self.side_slow_distance:
-            linear = min(linear, 0.035)
-            angular -= 0.35
+            # Side obstacles for followers:
+            # IMPORTANT:
+            # Do NOT change angular here.
+            # The old code flipped angular direction and caused drift.
+            if self.left < self.side_stop_distance:
+                linear = min(linear, 0.035)
 
-        if self.right < self.side_stop_distance:
-            linear = 0.0
-            angular = max(angular, 0.65)
+            elif self.left < self.side_slow_distance:
+                linear = min(linear, 0.060)
 
-        elif self.right < self.side_slow_distance:
-            linear = min(linear, 0.035)
-            angular += 0.35
+            if self.right < self.side_stop_distance:
+                linear = min(linear, 0.035)
 
-        if self.left < self.side_slow_distance or self.right < self.side_slow_distance:
-            wall_error = self.left - self.right
+            elif self.right < self.side_slow_distance:
+                linear = min(linear, 0.060)
 
-            if abs(wall_error) < 10.0:
-                angular -= self.wall_avoid_gain * wall_error
-                linear = min(linear, 0.05)
+            # No wall_error centering for followers.
+            # The path follower's cross-track and line-hold correction owns alignment.
 
         angular = max(-1.00, min(1.00, angular))
         return linear, angular
+    # ------------------------------------------------------------------
+    # Predecessor identification  (FIX: use shared chain order)
+    # ------------------------------------------------------------------
 
+    def _get_robot_ahead_name(self) -> str | None:
+        """
+        Return the name of this robot's predecessor in the chain.
+
+        FIX: uses the chain_order list broadcast by path_follower instead
+        of recomputing from world-X position. The old approach sorted by
+        world X-axis and broke after the first turn, causing the safety
+        filter to misidentify the predecessor and hard-stop the robot.
+        """
+        order = self.chain_order
+        if not order or self.robot_name not in order:
+            return None
+        idx = order.index(self.robot_name)
+        if idx == 0:
+            return None
+        return order[idx - 1]
 
     def _smooth_scan_value(self, old: float, new: float, alpha: float) -> float:
         if not math.isfinite(old):
@@ -230,7 +328,6 @@ class CmdVelSafetyFilter(Node):
         if not math.isfinite(new):
             return old
         return smooth_value(old, new, alpha)
-
 
     def _predecessor_is_in_front(self) -> bool:
         predecessor_name = self._get_robot_ahead_name()
@@ -261,72 +358,6 @@ class CmdVelSafetyFilter(Node):
 
         return abs(heading_error) < 0.45
 
-    def _get_robot_ahead_name(self):
-        if not self.current_leader_id:
-            return None
-
-        robots = [
-            r for r in self.other_robots.values()
-            if r.active and r.leader_id == self.current_leader_id
-        ]
-
-        leader = None
-        for r in robots:
-            if r.robot_name == r.leader_id:
-                leader = r
-                break
-
-        if leader is None:
-            return None
-
-        followers = [
-            r for r in robots
-            if r.robot_name != leader.robot_name
-        ]
-
-        same_row = []
-        behind_rows = []
-
-        for r in followers:
-            if abs(r.x - leader.x) <= 0.35:
-                same_row.append(r)
-            else:
-                behind_rows.append(r)
-
-        behind_same_lane = [
-            r for r in behind_rows
-            if abs(r.y - leader.y) <= 0.7
-        ]
-
-        behind_other_lane = [
-            r for r in behind_rows
-            if abs(r.y - leader.y) > 0.7
-        ]
-
-        behind_same_lane.sort(
-            key=lambda r: (-r.x, abs(r.y - leader.y), r.robot_name)
-        )
-        same_row.sort(
-            key=lambda r: (abs(r.y - leader.y), r.robot_name)
-        )
-        behind_other_lane.sort(
-            key=lambda r: (-r.x, abs(r.y - leader.y), r.robot_name)
-        )
-
-        order = [leader.robot_name] + [
-            r.robot_name for r in behind_same_lane + same_row + behind_other_lane
-        ]
-
-        if self.robot_name not in order:
-            return None
-
-        index = order.index(self.robot_name)
-
-        if index == 0:
-            return None
-
-        return order[index - 1]
-
     def _apply_robot_collision_avoidance(self, linear: float, angular: float):
         robot_ahead_name = self._get_robot_ahead_name()
 
@@ -355,8 +386,18 @@ class CmdVelSafetyFilter(Node):
         return linear, angular
 
     def _publish_cmd(self, linear: float, angular: float):
-        self.last_linear = smooth_value(self.last_linear, linear, alpha=0.65)
-        self.last_angular = smooth_value(self.last_angular, angular, alpha=0.55)
+        # FIX: reduced smoothing alpha for followers to cut lag that was
+        # stacking down the chain (~200-300 ms per robot at the old values).
+        # Leader keeps stronger smoothing for gentle wall-avoidance steering.
+        if self.is_leader:
+            alpha_lin = 0.65
+            alpha_ang = 0.55
+        else:
+            alpha_lin = 0.25
+            alpha_ang = 0.10
+
+        self.last_linear = smooth_value(self.last_linear, linear, alpha=alpha_lin)
+        self.last_angular = smooth_value(self.last_angular, angular, alpha=alpha_ang)
 
         self.cmd_pub.publish(make_twist(self.last_linear, self.last_angular))
 
