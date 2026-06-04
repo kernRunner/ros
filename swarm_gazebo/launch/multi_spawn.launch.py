@@ -175,7 +175,7 @@ def generate_launch_description():
                     {'publish_rate_hz': 5.0},
                     {'state_timeout_sec': 1.5},
                     {'lock_leader_after_startup': True},
-                    {'startup_election_delay_sec': 2.0},
+                    {'startup_election_delay_sec': 4.0},
                     {'spawn_x': spawn_x}, {'spawn_y': spawn_y},
                 ]
             )
@@ -214,7 +214,7 @@ def generate_launch_description():
                     {'robot_name': ns},
                     {'spawn_x': spawn_x},
                     {'spawn_y': spawn_y},
-                    {'post_election_wait_sec': 1.5},
+                    {'post_election_wait_sec': 4.5},
                 ]
             )
         )
@@ -233,20 +233,28 @@ def generate_launch_description():
                     {'path_topic': '/swarm/leader_path'},
                     {'spawn_x': spawn_x}, {'spawn_y': spawn_y},
                     {'chain_missing_speed_scale': 0.5},
-                    {'chain_spacing_m': 1.4},
+                    {'chain_spacing_m': 0.9},
                     {'follow_mode': 'predecessor'},
+                    # {'follow_mode': 'path'},
                     {'lateral_follow_offset_m': 0.0},
                     {'desired_follow_distance_m': 0.75},
-                    {'follow_deadband_m': 0.25},
-                    {'chain_stop_distance_m': 0.30},
-                    {'chain_slow_distance_m': 0.60},
-                    {'goal_tolerance_m': 0.18},
-                    {'max_linear_speed': 0.10},
+                    {'follow_deadband_m': 0.15},
+                    {'min_follow_distance_m': 0.55},
+                    {'max_follow_distance_m': 1.40},
+                    {'lateral_gain': 0.5},
+                    {'max_lateral_correction_rad': 0.60},
+                    {'too_close_reverse_speed': -0.025},
+                    {'ahead_stop_margin_m': 0.15},
+                    {'far_boost_scale': 1.25},
+                    {'chain_stop_distance_m': 0.35},
+                    {'chain_slow_distance_m': 0.70},
+                    {'goal_tolerance_m': 0.12},
+                    {'max_linear_speed': 0.09},
                     {'max_angular_speed': 1.00},
-                    {'angular_gain': 1.60},
-                    {'linear_gain': 0.4},
-                    {'lookahead_m': 0.0},
-                    {'startup_delay_per_slot_sec': 1.5},
+                    {'linear_gain': 0.35},
+                    {'angular_gain': 1.25},
+                    {'lookahead_m': 0.10},
+                    {'startup_delay_per_slot_sec': 2.0},
                 ]
             )
         )
@@ -260,12 +268,17 @@ def generate_launch_description():
                 parameters=[
                     {'use_sim_time': True}, {'robot_name': ns},
                     {'cmd_vel_topic': 'cmd_vel_raw'},
-                    {'forward_speed': 0.12}, {'turn_speed': 0.65},
+                    {'forward_speed': 0.10},
+                    {'turn_speed': 0.60},
                     {'front_blocked_distance': 0.85},
                     {'spawn_x': spawn_x}, {'spawn_y': spawn_y},
                     {'chain_spacing_m': 0.9},
                     {'formation_tolerance_m': 0.35},
-                    {'leader_start_delay_sec': 8.0},
+                    {'leader_start_delay_sec': 7.0},
+                    {'leader_wait_for_chain': False},
+                    {'leader_slow_chain_gap_m': 2.0},
+                    {'leader_max_chain_gap_m': 3.0},
+                    {'leader_wait_turn_allowed': True},
                 ]
             )
         )
@@ -295,12 +308,12 @@ def generate_launch_description():
                 parameters=[
                     {'use_sim_time': True}, {'robot_name': ns},
                     {'enabled': True},
-                    {'hard_stop_distance': 0.20},
-                    {'slowdown_distance': 0.35},
-                    {'side_stop_distance': 0.18},
-                    {'side_slow_distance': 0.35},
+                    {'side_stop_distance': 0.30},
+                    {'side_slow_distance': 0.60},
+                    {'hard_stop_distance': 0.35},
+                    {'slowdown_distance': 0.65},
+                    {'wall_avoid_gain': 0.08},
                     {'max_safe_linear_speed': 0.10},
-                    {'wall_avoid_gain': 0.03},
                 ]
             )
         )

@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
@@ -16,13 +16,18 @@ class PathFollower(Node):
     """
     Loose chain follower.
 
-    Default mode is 'predecessor':
-      - Compute the physical front-to-back order from robot positions.
+    Default mode: predecessor
+      - Compute physical front-to-back chain order.
+      - Lock that order after formation_ready so robots do not swap who follows who.
       - Each follower follows the robot directly in front of it.
-      - Followers keep a distance band instead of chasing an exact path point.
+      - Enforce a distance band:
+          too close  -> stop / gently reverse
+          good range -> stop
+          too far    -> catch up
+      - Prevent a follower from passing its predecessor.
 
-    Optional mode is 'path':
-      - Use the old leader path sampling behavior.
+    Optional mode: path
+      - Old leader path sampling behavior.
     """
 
     def __init__(self):
@@ -36,6 +41,10 @@ class PathFollower(Node):
         self.get_logger().info(
             f'[{self.robot_name}] path_follower started in {self.follow_mode} mode'
         )
+
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
 
     def _declare_parameters(self):
         self.declare_parameter('robot_name', 'robot2')
@@ -51,24 +60,36 @@ class PathFollower(Node):
         self.declare_parameter('goal_tolerance_m', 0.18)
 
         # General control.
-        self.declare_parameter('max_linear_speed', 0.08)
-        self.declare_parameter('max_angular_speed', 0.65)
-        self.declare_parameter('linear_gain', 0.35)
-        self.declare_parameter('angular_gain', 1.20)
+        self.declare_parameter('max_linear_speed', 0.10)
+        self.declare_parameter('max_angular_speed', 1.00)
+        self.declare_parameter('linear_gain', 0.40)
+        self.declare_parameter('angular_gain', 1.50)
 
         # Collision parameters. Keep both naming styles for launch compatibility.
-        self.declare_parameter('collision_stop_m', 0.45)
-        self.declare_parameter('collision_slow_m', 0.85)
-        self.declare_parameter('chain_stop_distance_m', 0.45)
-        self.declare_parameter('chain_slow_distance_m', 0.85)
+        self.declare_parameter('collision_stop_m', 0.30)
+        self.declare_parameter('collision_slow_m', 0.65)
+        self.declare_parameter('chain_stop_distance_m', 0.30)
+        self.declare_parameter('chain_slow_distance_m', 0.65)
         self.declare_parameter('chain_missing_speed_scale', 0.5)
         self.declare_parameter('startup_delay_per_slot_sec', 0.0)
 
-        # New loose-following behavior.
+        # Loose predecessor-following behavior.
         self.declare_parameter('follow_mode', 'predecessor')
-        self.declare_parameter('desired_follow_distance_m', 1.25)
-        self.declare_parameter('follow_deadband_m', 0.30)
+        self.declare_parameter('desired_follow_distance_m', 0.90)
+        self.declare_parameter('follow_deadband_m', 0.25)
         self.declare_parameter('lateral_follow_offset_m', 0.0)
+
+        # Distance-band guard.
+        self.declare_parameter('min_follow_distance_m', 0.55)
+        self.declare_parameter('max_follow_distance_m', 1.80)
+        self.declare_parameter('too_close_reverse_speed', -0.025)
+        self.declare_parameter('ahead_stop_margin_m', 0.15)
+        self.declare_parameter('far_boost_scale', 1.25)
+        self.declare_parameter('lateral_gain', 1.20)
+        self.declare_parameter('max_lateral_correction_rad', 0.60)
+
+        # Chain order behavior.
+        self.declare_parameter('lock_chain_order', True)
 
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
@@ -87,7 +108,7 @@ class PathFollower(Node):
         self.linear_gain = float(self.get_parameter('linear_gain').value)
         self.angular_gain = float(self.get_parameter('angular_gain').value)
 
-        # Prefer the launch-file names.
+        # Prefer launch-file names.
         self.collision_stop_m = float(
             self.get_parameter('chain_stop_distance_m').value
         )
@@ -106,6 +127,33 @@ class PathFollower(Node):
             self.get_parameter('lateral_follow_offset_m').value
         )
 
+        self.min_follow_distance_m = float(
+            self.get_parameter('min_follow_distance_m').value
+        )
+        self.max_follow_distance_m = float(
+            self.get_parameter('max_follow_distance_m').value
+        )
+        self.too_close_reverse_speed = float(
+            self.get_parameter('too_close_reverse_speed').value
+        )
+        self.ahead_stop_margin_m = float(
+            self.get_parameter('ahead_stop_margin_m').value
+        )
+        self.far_boost_scale = float(
+            self.get_parameter('far_boost_scale').value
+        )
+
+        self.lateral_gain = float(self.get_parameter('lateral_gain').value)
+        self.max_lateral_correction_rad = float(
+            self.get_parameter('max_lateral_correction_rad').value
+        )
+
+        self.startup_delay_per_slot_sec = float(
+            self.get_parameter('startup_delay_per_slot_sec').value
+        )
+
+        self.lock_chain_order = bool(self.get_parameter('lock_chain_order').value)
+
     def _init_state(self):
         self.world_x = 0.0
         self.world_y = 0.0
@@ -118,10 +166,12 @@ class PathFollower(Node):
         self.current_leader_id = ''
         self.is_leader = False
 
+        self.path_follow_start_time_ns = None
+
         self.other_robots: Dict[str, RobotState] = {}
 
-        self.last_order: List[str] = []
-        self.order_locked = False
+        self.locked_order: List[str] = []
+        self.last_logged_order: List[str] = []
 
     def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
@@ -138,6 +188,10 @@ class PathFollower(Node):
 
         self.create_timer(0.1, self.control_loop)
 
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
+
     def odom_callback(self, msg: Odometry):
         self.world_x = self.spawn_x + msg.pose.pose.position.x
         self.world_y = self.spawn_y + msg.pose.pose.position.y
@@ -149,37 +203,101 @@ class PathFollower(Node):
     def state_callback(self, msg: RobotState):
         self.other_robots[msg.robot_name] = msg
 
-        if msg.robot_name == self.robot_name:
-            self.current_role = msg.role
-            self.current_leader_id = msg.leader_id
-            self.is_leader = msg.role == 'leader' and msg.leader_id == self.robot_name
+        if msg.robot_name != self.robot_name:
+            return
+
+        old_leader = self.current_leader_id
+
+        self.current_role = msg.role
+        self.current_leader_id = msg.leader_id
+        self.is_leader = msg.role == 'leader' and msg.leader_id == self.robot_name
+
+        if self.current_leader_id != old_leader:
+            self.locked_order = []
+            self.last_logged_order = []
+            self.formation_done = False
 
     def formation_ready_cb(self, msg: Bool):
         if msg.data and not self.formation_done:
             self.formation_done = True
+            self.path_follow_start_time_ns = self.get_clock().now().nanoseconds
             self.get_logger().info(f'[{self.robot_name}] path following active')
 
+            # Lock chain once formation is ready, if enabled.
+            if self.lock_chain_order:
+                order = self.compute_physical_chain_order()
+                if self.robot_name in order:
+                    self.locked_order = order
+                    self._log_order(order, locked=True)
+
+
+    def startup_delay_done(self) -> bool:
+        if self.startup_delay_per_slot_sec <= 0.0:
+            return True
+
+        if self.path_follow_start_time_ns is None:
+            return False
+
+        index = self.get_my_index()
+
+        if index is None:
+            return False
+
+        # leader index 0, first follower index 1.
+        # robot2 starts after 0 sec, robot4 after 1.5 sec, robot3 after 3 sec.
+        follower_index = max(0, index - 1)
+        required_delay = follower_index * self.startup_delay_per_slot_sec
+
+        elapsed = (
+            self.get_clock().now().nanoseconds - self.path_follow_start_time_ns
+        ) / 1e9
+
+        return elapsed >= required_delay
+    # ------------------------------------------------------------------
+    # Main control
+    # ------------------------------------------------------------------
+
     def control_loop(self):
-        # Before formation_ready, this node publishes nothing.
-        # This avoids fighting formation_manager.
         if not self.formation_done:
             return
 
-        # Leader is driven by tree_explorer.
-        # This node must not publish stop commands for the leader.
+        # Leader is driven by tree_explorer. Do not publish stop here.
         if self.is_leader or self.current_role != 'follower' or not self.current_leader_id:
             return
 
-        if self.follow_mode == 'path':
+        predecessor_name, predecessor = self.get_predecessor()
+
+        if predecessor is None:
+            self.publish_cmd(0.0, 0.0)
+            return
+
+        guard = self.predecessor_distance_guard(predecessor)
+        if guard is not None:
+            linear, angular = guard
+            self.publish_cmd(linear, angular)
+            return
+
+        if self.should_use_path_mode(predecessor):
             target = self.get_path_target()
+
+            if target is None:
+                target = self.get_predecessor_target(predecessor)
         else:
-            target = self.get_predecessor_target()
+            target = self.get_predecessor_target(predecessor)
 
         if target is None:
             self.publish_cmd(0.0, 0.0)
             return
 
+        if self.is_leader or self.current_role != 'follower' or not self.current_leader_id:
+            return
+
         linear, angular = self.compute_control(target)
+
+        # If too far, catch up slightly.
+        dist = math.hypot(predecessor.x - self.world_x, predecessor.y - self.world_y)
+        if dist > self.max_follow_distance_m:
+            linear *= self.far_boost_scale
 
         scale = self.collision_speed_scale()
         linear *= scale
@@ -187,19 +305,49 @@ class PathFollower(Node):
         if scale <= 0.01:
             linear = 0.0
 
+        linear = max(-0.04, min(self.max_linear_speed, linear))
+        angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+
         self.publish_cmd(linear, angular)
 
+
+    def should_use_path_mode(self, predecessor):
+        # Use path mode if the leader path exists and the chain is in a turn.
+        if self.path is None or len(self.path.poses) < 5:
+            return False
+
+        leader = self.other_robots.get(self.current_leader_id)
+        if leader is None:
+            return False
+
+        # If predecessor yaw differs from this robot yaw, the chain is bending.
+        yaw_error = abs(normalize_angle(predecessor.yaw - self.yaw))
+
+        if yaw_error > 0.35:
+            return True
+
+        # If follower is too far from predecessor, chase predecessor instead.
+        distance = math.hypot(predecessor.x - self.world_x, predecessor.y - self.world_y)
+        if distance > self.max_follow_distance_m:
+            return False
+
+        return False
     # ------------------------------------------------------------------
     # Chain order
     # ------------------------------------------------------------------
 
     def get_chain_order(self) -> List[str]:
-        """
-        Physical front-to-back order along the leader heading.
+        if self.lock_chain_order and self.locked_order:
+            return self.locked_order
 
-        This fixes the issue where the system said robot1->robot2->robot3,
-        while Gazebo physically had robot1->robot3->robot2.
-        """
+        order = self.compute_physical_chain_order()
+
+        if order:
+            self._log_order(order, locked=False)
+
+        return order
+
+    def compute_physical_chain_order(self) -> List[str]:
         leader_name = self.current_leader_id
 
         if not leader_name:
@@ -224,10 +372,6 @@ class PathFollower(Node):
         def along_leader_axis(robot: RobotState) -> float:
             dx = robot.x - leader.x
             dy = robot.y - leader.y
-
-            # 0.0 is the leader position.
-            # Negative values are behind the leader.
-            # More negative means farther back in the chain.
             return dx * fx + dy * fy
 
         ordered = sorted(
@@ -242,15 +386,37 @@ class PathFollower(Node):
         if leader_name in ordered_names:
             ordered_names.remove(leader_name)
 
-        order = [leader_name] + ordered_names
+        return [leader_name] + ordered_names
 
-        if order != self.last_order:
-            self.last_order = order
-            self.get_logger().info(
-                f'[{self.robot_name}] chain order: {" -> ".join(order)}'
-            )
+    def _log_order(self, order: List[str], locked: bool):
+        if order == self.last_logged_order:
+            return
 
-        return order
+        self.last_logged_order = list(order)
+
+        label = 'locked chain order' if locked else 'chain order'
+        self.get_logger().info(
+            f'[{self.robot_name}] {label}: {" -> ".join(order)}'
+        )
+
+    def get_predecessor(self) -> Tuple[Optional[str], Optional[RobotState]]:
+        order = self.get_chain_order()
+
+        if self.robot_name not in order:
+            return None, None
+
+        index = order.index(self.robot_name)
+
+        if index == 0:
+            return None, None
+
+        predecessor_name = order[index - 1]
+        predecessor = self.other_robots.get(predecessor_name)
+
+        if predecessor is None or not predecessor.active:
+            return None, None
+
+        return predecessor_name, predecessor
 
     def get_my_index(self) -> Optional[int]:
         order = self.get_chain_order()
@@ -264,23 +430,42 @@ class PathFollower(Node):
     # Loose predecessor following
     # ------------------------------------------------------------------
 
-    def get_predecessor_target(self):
-        order = self.get_chain_order()
+    def predecessor_distance_guard(self, predecessor: RobotState):
+        dx = predecessor.x - self.world_x
+        dy = predecessor.y - self.world_y
+        distance = math.hypot(dx, dy)
 
-        if self.robot_name not in order:
-            return None
+        angle_to_predecessor = math.atan2(dy, dx)
+        heading_error = normalize_angle(angle_to_predecessor - self.yaw)
 
-        index = order.index(self.robot_name)
+        # Use predecessor yaw to check whether follower has passed it.
+        fx = math.cos(predecessor.yaw)
+        fy = math.sin(predecessor.yaw)
 
-        if index == 0:
-            return None
+        rel_x = self.world_x - predecessor.x
+        rel_y = self.world_y - predecessor.y
 
-        predecessor_name = order[index - 1]
-        predecessor = self.other_robots.get(predecessor_name)
+        # Positive means follower is in front of predecessor.
+        ahead_amount = rel_x * fx + rel_y * fy
 
-        if predecessor is None or not predecessor.active:
-            return None
+        if ahead_amount > self.ahead_stop_margin_m:
+            angular = self.angular_gain * heading_error
+            angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+            return 0.0, angular
 
+        if distance < self.min_follow_distance_m:
+            angular = self.angular_gain * heading_error
+            angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+
+            # If mostly facing predecessor, reverse gently to create space.
+            if abs(heading_error) < 0.8:
+                return self.too_close_reverse_speed, angular
+
+            return 0.0, angular
+
+        return None
+
+    def get_predecessor_target(self, predecessor: RobotState):
         dx = predecessor.x - self.world_x
         dy = predecessor.y - self.world_y
         distance = math.hypot(dx, dy)
@@ -288,26 +473,46 @@ class PathFollower(Node):
         min_distance = self.desired_follow_distance_m - self.follow_deadband_m
         max_distance = self.desired_follow_distance_m + self.follow_deadband_m
 
-        # Too close: stop. Do not try to rotate aggressively into the predecessor.
+        # Good distance: still correct lateral drift if needed.
+        if min_distance <= distance <= max_distance:
+            # Do not return None immediately; allow lateral correction.
+            pass
+
         if distance < min_distance:
             return None
 
-        # Inside acceptable band: stop.
-        if distance <= max_distance:
-            return None
+        # Predecessor forward direction.
+        fx = math.cos(predecessor.yaw)
+        fy = math.sin(predecessor.yaw)
 
-        # Direction from follower to predecessor.
-        angle_to_predecessor = math.atan2(
-            predecessor.y - self.world_y,
-            predecessor.x - self.world_x,
-        )
+        # Predecessor side direction.
+        sx = -math.sin(predecessor.yaw)
+        sy = math.cos(predecessor.yaw)
 
-        # Target is between follower and predecessor.
-        tx = predecessor.x - self.desired_follow_distance_m * math.cos(angle_to_predecessor)
-        ty = predecessor.y - self.desired_follow_distance_m * math.sin(angle_to_predecessor)
+        # Vector from predecessor to this follower.
+        rx = self.world_x - predecessor.x
+        ry = self.world_y - predecessor.y
 
-        return tx, ty, angle_to_predecessor
+        # follower_forward is usually negative if follower is behind.
+        follower_forward = rx * fx + ry * fy
 
+        # follower_lateral is left/right offset from predecessor's path line.
+        follower_lateral = rx * sx + ry * sy
+
+        # Desired point behind predecessor.
+        tx = predecessor.x - self.desired_follow_distance_m * fx
+        ty = predecessor.y - self.desired_follow_distance_m * fy
+
+        # Pull target toward centerline, opposite lateral error.
+        tx -= self.lateral_gain * follower_lateral * sx
+        ty -= self.lateral_gain * follower_lateral * sy
+
+        # Optional fixed lateral offset if you want a staggered chain.
+        tx += self.lateral_follow_offset_m * sx
+        ty += self.lateral_follow_offset_m * sy
+
+        return tx, ty, predecessor.yaw
+        
     # ------------------------------------------------------------------
     # Old path-following mode, kept as optional fallback
     # ------------------------------------------------------------------
@@ -409,8 +614,6 @@ class PathFollower(Node):
 
         linear = min(self.linear_gain * distance, self.max_linear_speed)
 
-        # Do not fully stop when the target is to the side.
-        # Move slowly while turning so the chain can bend around corners.
         abs_error = abs(heading_error)
 
         if abs_error > 1.40:
@@ -442,7 +645,7 @@ class PathFollower(Node):
 
             d = math.hypot(robot.x - self.world_x, robot.y - self.world_y)
 
-            # The direct predecessor is allowed to be closer than other robots.
+            # Direct predecessor is handled by predecessor_distance_guard().
             if name == robot_ahead_name:
                 if d < 0.25:
                     return 0.0

@@ -1,4 +1,5 @@
 import math
+import re
 
 import rclpy
 from rclpy.node import Node
@@ -22,25 +23,29 @@ class TreeExplorer(Node):
         self._init_state()
         self._init_ros_interfaces()
 
-        self.became_leader_time_ns = None
-
         self.get_logger().info(f'[{self.robot_name}] tree_explorer started')
 
     def _declare_parameters(self):
         self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel_raw')
 
-        self.declare_parameter('forward_speed', 0.18)
-        self.declare_parameter('turn_speed', 0.75)
+        self.declare_parameter('forward_speed', 0.12)
+        self.declare_parameter('turn_speed', 0.65)
         self.declare_parameter('front_blocked_distance', 0.85)
 
         self.declare_parameter('spawn_x', 0.0)
         self.declare_parameter('spawn_y', 0.0)
 
-        self.declare_parameter('chain_spacing_m', 1.3)
+        self.declare_parameter('chain_spacing_m', 0.9)
         self.declare_parameter('formation_tolerance_m', 0.35)
 
-        self.declare_parameter('leader_start_delay_sec', 18.0)
+        self.declare_parameter('leader_start_delay_sec', 8.0)
+
+        # New: leader waits/slows down if the relay chain stretches too much.
+        self.declare_parameter('leader_wait_for_chain', True)
+        self.declare_parameter('leader_slow_chain_gap_m', 1.4)
+        self.declare_parameter('leader_max_chain_gap_m', 2.0)
+        self.declare_parameter('leader_wait_turn_allowed', True)
 
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
@@ -64,6 +69,19 @@ class TreeExplorer(Node):
             self.get_parameter('leader_start_delay_sec').value
         )
 
+        self.leader_wait_for_chain = bool(
+            self.get_parameter('leader_wait_for_chain').value
+        )
+        self.leader_slow_chain_gap_m = float(
+            self.get_parameter('leader_slow_chain_gap_m').value
+        )
+        self.leader_max_chain_gap_m = float(
+            self.get_parameter('leader_max_chain_gap_m').value
+        )
+        self.leader_wait_turn_allowed = bool(
+            self.get_parameter('leader_wait_turn_allowed').value
+        )
+
     def _init_state(self):
         self.x = 0.0
         self.y = 0.0
@@ -78,6 +96,9 @@ class TreeExplorer(Node):
         self.front = float('inf')
         self.front_left = float('inf')
         self.front_right = float('inf')
+
+        self.became_leader_time_ns = None
+        self.last_chain_status_log_ns = 0
 
     def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(
@@ -124,7 +145,8 @@ class TreeExplorer(Node):
         if self.is_leader and not was_leader:
             self.became_leader_time_ns = self.get_clock().now().nanoseconds
             self.get_logger().info(
-                f'[{self.robot_name}] leader waiting {self.leader_start_delay_sec:.1f}s before exploring'
+                f'[{self.robot_name}] leader waiting '
+                f'{self.leader_start_delay_sec:.1f}s before exploring'
             )
 
     def scan_callback(self, msg: LaserScan):
@@ -136,8 +158,8 @@ class TreeExplorer(Node):
         self.front_right = sector_avg(msg, -0.65, 0.35)
 
     def control_loop(self):
-        # Non-leaders are controlled by formation_manager/path_follower.
-        # Do not publish stop here.
+        # Non-leaders are controlled by path_follower.
+        # Do not publish stop here, or this node will fight the follower.
         if not self.is_leader:
             return
 
@@ -146,8 +168,18 @@ class TreeExplorer(Node):
             return
 
         linear, angular = self._compute_exploration_command()
-        self.cmd_pub.publish(make_twist(linear, angular))
 
+        if self.leader_wait_for_chain:
+            scale = self._chain_speed_scale()
+
+            # If chain is stretched, slow/stop only forward movement.
+            # Turning can still be useful to avoid obstacles.
+            linear *= scale
+
+            if scale <= 0.01 and not self.leader_wait_turn_allowed:
+                angular = 0.0
+
+        self.cmd_pub.publish(make_twist(linear, angular))
 
     def _leader_start_delay_done(self):
         if self.became_leader_time_ns is None:
@@ -170,6 +202,146 @@ class TreeExplorer(Node):
             return 0.02, self.turn_speed
 
         return 0.02, -self.turn_speed
+
+    # ------------------------------------------------------------------
+    # Chain gap / relay continuity
+    # ------------------------------------------------------------------
+
+    def _chain_speed_scale(self):
+        order = self._get_chain_order()
+
+        # No followers yet: allow leader to move.
+        if len(order) <= 1:
+            return 1.0
+
+        max_gap = self._max_chain_gap(order)
+
+        self._log_chain_status(order, max_gap)
+
+        if max_gap >= self.leader_max_chain_gap_m:
+            return 0.0
+
+        if max_gap >= self.leader_slow_chain_gap_m:
+            # Smooth slowdown between slow gap and max gap.
+            span = self.leader_max_chain_gap_m - self.leader_slow_chain_gap_m
+
+            if span <= 0.01:
+                return 0.0
+
+            scale = 1.0 - (
+                (max_gap - self.leader_slow_chain_gap_m) / span
+            )
+
+            return max(0.25, min(1.0, scale))
+
+        return 1.0
+
+    def _get_chain_order(self):
+        # Once locked, never reorder while driving.
+        if self.locked_chain_order:
+            return self.locked_chain_order
+
+        robots = [
+            r for r in self.other_robots.values()
+            if r.active and r.leader_id == self.robot_name
+        ]
+
+        names = [r.robot_name for r in robots]
+
+        if self.robot_name not in names:
+            names.append(self.robot_name)
+
+        states = {
+            r.robot_name: r
+            for r in robots
+        }
+
+        if self.robot_name not in states:
+            fake_self = RobotState()
+            fake_self.robot_name = self.robot_name
+            fake_self.x = self.x
+            fake_self.y = self.y
+            fake_self.yaw = self.yaw
+            fake_self.active = True
+            states[self.robot_name] = fake_self
+
+        leader = states.get(self.robot_name)
+
+        if leader is None:
+            return []
+
+        fx = math.cos(leader.yaw)
+        fy = math.sin(leader.yaw)
+
+        def along_leader_axis(name):
+            r = states[name]
+            dx = r.x - leader.x
+            dy = r.y - leader.y
+            return dx * fx + dy * fy
+
+        ordered = sorted(
+            names,
+            key=along_leader_axis,
+            reverse=True,
+        )
+
+        if self.robot_name in ordered:
+            ordered.remove(self.robot_name)
+
+        order = [self.robot_name] + ordered
+
+        # Lock only when we see all 4 robots.
+        # Change this if you later use 5 or 6 robots.
+        if len(order) >= 4:
+            self.locked_chain_order = order
+            self.get_logger().info(
+                f'[{self.robot_name}] locked leader chain: {" -> ".join(order)}'
+            )
+
+        return order
+
+    def _max_chain_gap(self, order):
+        if len(order) < 2:
+            return 0.0
+
+        max_gap = 0.0
+
+        for a, b in zip(order[:-1], order[1:]):
+            pa = self._get_robot_position(a)
+            pb = self._get_robot_position(b)
+
+            if pa is None or pb is None:
+                continue
+
+            gap = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+            max_gap = max(max_gap, gap)
+
+        return max_gap
+
+    def _get_robot_position(self, name):
+        if name == self.robot_name:
+            return self.x, self.y
+
+        state = self.other_robots.get(name)
+
+        if state is None or not state.active:
+            return None
+
+        return state.x, state.y
+
+    def _log_chain_status(self, order, max_gap):
+        now_ns = self.get_clock().now().nanoseconds
+
+        # Log about once every 2 seconds.
+        if now_ns - self.last_chain_status_log_ns < 2_000_000_000:
+            return
+
+        self.last_chain_status_log_ns = now_ns
+
+        self.get_logger().info(
+            f'[{self.robot_name}] chain={" -> ".join(order)} '
+            f'max_gap={max_gap:.2f}m'
+        )
 
     def _publish_stop(self):
         self.cmd_pub.publish(make_twist())

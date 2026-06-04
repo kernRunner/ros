@@ -125,33 +125,33 @@ class CmdVelSafetyFilter(Node):
         if not msg.ranges:
             return
 
-        self.front = smooth_value(
+        self.front = self._smooth_scan_value(
             self.front,
-            sector_min(msg, 0.0, 0.25),
+            sector_min(msg, 0.0, 0.35),
             0.65,
         )
 
-        self.front_left = smooth_value(
+        self.front_left = self._smooth_scan_value(
             self.front_left,
-            sector_avg(msg, 0.65, 0.35),
+            sector_avg(msg, 0.65, 0.45),
             0.65,
         )
 
-        self.front_right = smooth_value(
+        self.front_right = self._smooth_scan_value(
             self.front_right,
-            sector_avg(msg, -0.65, 0.35),
+            sector_avg(msg, -0.65, 0.45),
             0.65,
         )
 
-        self.left = smooth_value(
+        self.left = self._smooth_scan_value(
             self.left,
-            sector_min(msg, math.pi / 2.0, 0.45),
+            sector_min(msg, math.pi / 2.0, 0.55),
             0.65,
         )
 
-        self.right = smooth_value(
+        self.right = self._smooth_scan_value(
             self.right,
-            sector_min(msg, -math.pi / 2.0, 0.45),
+            sector_min(msg, -math.pi / 2.0, 0.55),
             0.65,
         )
 
@@ -179,17 +179,39 @@ class CmdVelSafetyFilter(Node):
                 angular += 0.15 if side_bias >= 0.0 else -0.15
 
         else:
-            # Followers may see the robot ahead. Only emergency-stop very close.
-            if self.front < 0.12:
-                linear = 0.0
+            predecessor_ahead = self._predecessor_is_in_front()
 
+            if predecessor_ahead:
+                # This is probably the robot we follow.
+                # Still emergency stop if dangerously close.
+                if self.front < 0.18:
+                    linear = 0.0
+            else:
+                # This is probably an obstacle/wall.
+                if self.front < self.hard_stop_distance:
+                    linear = 0.0
+                    angular = 0.55 if side_bias >= 0.0 else -0.55
+
+                elif self.front < self.slowdown_distance:
+                    linear = min(linear, 0.04)
+                    angular += 0.20 if side_bias >= 0.0 else -0.20
+
+        # Strong side-wall protection.
         if self.left < self.side_stop_distance:
-            linear = min(linear, 0.03)
-            angular -= 0.25
+            linear = 0.0
+            angular = min(angular, -0.65)
+
+        elif self.left < self.side_slow_distance:
+            linear = min(linear, 0.035)
+            angular -= 0.35
 
         if self.right < self.side_stop_distance:
-            linear = min(linear, 0.03)
-            angular += 0.25
+            linear = 0.0
+            angular = max(angular, 0.65)
+
+        elif self.right < self.side_slow_distance:
+            linear = min(linear, 0.035)
+            angular += 0.35
 
         if self.left < self.side_slow_distance or self.right < self.side_slow_distance:
             wall_error = self.left - self.right
@@ -198,8 +220,46 @@ class CmdVelSafetyFilter(Node):
                 angular -= self.wall_avoid_gain * wall_error
                 linear = min(linear, 0.05)
 
-        angular = max(-0.70, min(0.70, angular))
+        angular = max(-1.00, min(1.00, angular))
         return linear, angular
+
+
+    def _smooth_scan_value(self, old: float, new: float, alpha: float) -> float:
+        if not math.isfinite(old):
+            return new
+        if not math.isfinite(new):
+            return old
+        return smooth_value(old, new, alpha)
+
+
+    def _predecessor_is_in_front(self) -> bool:
+        predecessor_name = self._get_robot_ahead_name()
+
+        if predecessor_name is None:
+            return False
+
+        predecessor = self.other_robots.get(predecessor_name)
+
+        if predecessor is None:
+            return False
+
+        dx = predecessor.x - self.x
+        dy = predecessor.y - self.y
+
+        distance = math.hypot(dx, dy)
+
+        if distance > 1.2:
+            return False
+
+        angle_to_predecessor = math.atan2(dy, dx)
+        heading_error = abs(angle_to_predecessor - self.yaw)
+
+        while heading_error > math.pi:
+            heading_error -= 2.0 * math.pi
+        while heading_error < -math.pi:
+            heading_error += 2.0 * math.pi
+
+        return abs(heading_error) < 0.45
 
     def _get_robot_ahead_name(self):
         if not self.current_leader_id:

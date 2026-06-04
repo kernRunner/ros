@@ -3,8 +3,8 @@
   <world name="tree_exploration_test">
 
     <physics name="1ms" type="ignored">
-      <max_step_size>0.001</max_step_size>
-      <real_time_factor>1.0</real_time_factor>
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>5.0</real_time_factor>
     </physics>
 
     <plugin filename="ignition-gazebo-physics-system"
@@ -26,7 +26,6 @@
       <direction>-0.5 0.1 -0.9</direction>
     </light>
 
-    <!-- Ground -->
     <model name="ground_plane">
       <static>true</static>
       <link name="link">
@@ -53,234 +52,43 @@
       </link>
     </model>
 
-    <!-- ===================== -->
-    <!-- Outer boundary walls  -->
-    <!-- ===================== -->
-
+    <!-- Outer boundary -->
     <model name="outer_wall_north">
       <static>true</static>
-      <pose>0 12 0.5 0 0 0</pose>
+      <pose>0 13 0.5 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>24 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>24 0.25 1</size></box></geometry></visual>
+        <collision name="collision"><geometry><box><size>26 0.25 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>26 0.25 1</size></box></geometry></visual>
       </link>
     </model>
 
     <model name="outer_wall_south">
       <static>true</static>
-      <pose>0 -12 0.5 0 0 0</pose>
+      <pose>0 -13 0.5 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>24 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>24 0.25 1</size></box></geometry></visual>
+        <collision name="collision"><geometry><box><size>26 0.25 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>26 0.25 1</size></box></geometry></visual>
       </link>
     </model>
 
     <model name="outer_wall_east">
       <static>true</static>
-      <pose>12 0 0.5 0 0 0</pose>
+      <pose>13 0 0.5 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>0.25 24 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>0.25 24 1</size></box></geometry></visual>
+        <collision name="collision"><geometry><box><size>0.25 26 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.25 26 1</size></box></geometry></visual>
       </link>
     </model>
 
     <model name="outer_wall_west">
       <static>true</static>
-      <pose>-12 0 0.5 0 0 0</pose>
+      <pose>-13 0 0.5 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>0.25 24 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>0.25 24 1</size></box></geometry></visual>
+        <collision name="collision"><geometry><box><size>0.25 26 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.25 26 1</size></box></geometry></visual>
       </link>
     </model>
 
-    <!-- ========================= -->
-    <!-- Central branching corridor -->
-    <!-- ========================= -->
-
-    <!-- Main vertical corridor walls -->
-<!-- Main corridor starts AFTER the spawn/staging area -->
-    <model name="main_corridor_left_wall">
-      <static>true</static>
-      <pose>-2.2 2.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.25 11 1</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.25 11 1</size></box></geometry>
-        </visual>
-      </link>
-    </model>
-
-    <model name="main_corridor_right_wall">
-      <static>true</static>
-      <pose>2.2 2.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.25 11 1</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.25 11 1</size></box></geometry>
-        </visual>
-      </link>
-    </model>
-    <!-- Openings / junctions created by side corridors -->
-
-    <!-- Left upper branch -->
-    <model name="left_upper_branch_top_wall">
-      <static>true</static>
-      <pose>-6 5.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="left_upper_branch_bottom_wall">
-      <static>true</static>
-      <pose>-6 3.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <!-- Right upper branch -->
-    <model name="right_upper_branch_top_wall">
-      <static>true</static>
-      <pose>6 5.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="right_upper_branch_bottom_wall">
-      <static>true</static>
-      <pose>6 3.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <!-- Left lower branch -->
-    <model name="left_lower_branch_top_wall">
-      <static>true</static>
-      <pose>-6 -3.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="left_lower_branch_bottom_wall">
-      <static>true</static>
-      <pose>-6 -5.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <!-- Right lower branch -->
-    <model name="right_lower_branch_top_wall">
-      <static>true</static>
-      <pose>6 -3.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="right_lower_branch_bottom_wall">
-      <static>true</static>
-      <pose>6 -5.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>9 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>9 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <!-- ===================== -->
-    <!-- End rooms / pockets   -->
-    <!-- ===================== -->
-
-    <model name="left_upper_room_block">
-      <static>true</static>
-      <pose>-9 7.8 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>2.5 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>2.5 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="right_upper_room_block">
-      <static>true</static>
-      <pose>9 7.8 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>2.5 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>2.5 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="left_lower_room_block">
-      <static>true</static>
-      <pose>-9 -7.8 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>2.5 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>2.5 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="right_lower_room_block">
-      <static>true</static>
-      <pose>9 -7.8 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>2.5 0.25 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>2.5 0.25 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <!-- ===================== -->
-    <!-- Small obstacles        -->
-    <!-- ===================== -->
-
-    <model name="obstacle_center_1">
-      <static>true</static>
-      <pose>0 2.0 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>0.8 0.8 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>0.8 0.8 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="obstacle_center_2">
-      <static>true</static>
-      <pose>0 -2.0 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>0.8 0.8 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>0.8 0.8 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="obstacle_left_branch">
-      <static>true</static>
-      <pose>-6 4.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>0.7 0.7 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>0.7 0.7 1</size></box></geometry></visual>
-      </link>
-    </model>
-
-    <model name="obstacle_right_branch">
-      <static>true</static>
-      <pose>6 -4.5 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>0.7 0.7 1</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>0.7 0.7 1</size></box></geometry></visual>
-      </link>
-    </model>
 
   </world>
 </sdf>
