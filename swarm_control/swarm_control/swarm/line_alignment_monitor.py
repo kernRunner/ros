@@ -148,8 +148,21 @@ class LineAlignmentMonitor(Node):
 
     def check_alignment(self):
         order = self._get_chain_order()
+
         if len(order) < 2:
             return
+
+        for name in order:
+            r = self.robot_states.get(name)
+
+            if r is None:
+                continue
+
+            r = self.robot_states[name]
+
+            # self.get_logger().info(
+            #     f'{name}: x={r.x:.2f} y={r.y:.2f} yaw={r.yaw:.2f}'
+            # )
 
         path_errors, yaw_errors = self.compute_path_lateral_and_yaw_errors(order)
         neighbor_errors = self.compute_neighbor_line_errors(order)
@@ -211,12 +224,12 @@ class LineAlignmentMonitor(Node):
             f'yaw[{yaw_text}]'
         )
 
-        if status == 'OK':
-            self.get_logger().info(msg)
-        elif status == 'WARN':
-            self.get_logger().warn(msg)
-        else:
-            self.get_logger().error(msg)
+        # if status == 'OK':
+        #     self.get_logger().info(msg)
+        # elif status == 'WARN':
+        #     self.get_logger().warn(msg)
+        # else:
+        #     self.get_logger().error(msg)
 
     def _format_errors(self, values: Dict[str, float]) -> str:
         return ' '.join(f'{name}={value:+.2f}' for name, value in values.items())

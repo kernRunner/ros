@@ -49,6 +49,11 @@ class LeaderPathPublisher(Node):
         self.last_y = None
         self.last_yaw = None
 
+        self.have_self_state = False
+        self.current_x = 0.0
+        self.current_y = 0.0
+        self.current_yaw = 0.0
+
         self.path_msg = self._new_path_msg()
 
     def _init_ros_interfaces(self):
@@ -73,19 +78,32 @@ class LeaderPathPublisher(Node):
         self.current_leader_id = msg.leader_id
         self.is_leader = msg.role == 'leader' and msg.leader_id == self.robot_name
 
+        self.current_x = msg.x
+        self.current_y = msg.y
+        self.current_yaw = msg.yaw
+        self.have_self_state = True
+
         if self.is_leader and not was_leader:
             self._reset_path()
             self.get_logger().info(f'[{self.robot_name}] became leader, resetting path')
 
     def odom_callback(self, msg: Odometry):
+        # Fallback only if RobotState has not arrived yet.
+        if self.have_self_state:
+            return
+
         if not self.is_leader:
             return
 
         x, y, yaw = self._world_pose_from_odom(msg)
+        self._maybe_append_pose(msg.header.stamp, x, y, yaw)
 
+
+    def _maybe_append_pose(self, stamp, x: float, y: float, yaw: float):
         if self._should_append_pose(x, y, yaw):
-            self._append_interpolated_pose(msg.header.stamp, x, y, yaw)
+            self._append_interpolated_pose(stamp, x, y, yaw)
             self._remember_last_pose(x, y, yaw)
+
 
     def _append_interpolated_pose(self, stamp, x: float, y: float, yaw: float):
         # First point: append directly.
@@ -117,6 +135,14 @@ class LeaderPathPublisher(Node):
     def publish_path(self):
         if not self.is_leader:
             return
+
+        if self.have_self_state:
+            self._maybe_append_pose(
+                self.get_clock().now().to_msg(),
+                self.current_x,
+                self.current_y,
+                self.current_yaw,
+            )
 
         if not self.path_msg.poses:
             return

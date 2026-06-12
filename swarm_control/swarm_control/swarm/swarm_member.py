@@ -3,6 +3,7 @@ from typing import Dict
 import rclpy
 from rclpy.node import Node
 
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Trigger
@@ -37,6 +38,10 @@ class SwarmMember(Node):
         self.declare_parameter('spawn_x', 0.0)
         self.declare_parameter('spawn_y', 0.0)
 
+        # NEW: use Gazebo true pose if topic exists.
+        self.declare_parameter('use_ground_truth_pose', True)
+        self.declare_parameter('ground_truth_pose_topic', 'ground_truth_pose')
+
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.state_timeout_sec = float(self.get_parameter('state_timeout_sec').value)
@@ -50,12 +55,21 @@ class SwarmMember(Node):
         self.spawn_x = float(self.get_parameter('spawn_x').value)
         self.spawn_y = float(self.get_parameter('spawn_y').value)
 
+        self.use_ground_truth_pose = bool(
+            self.get_parameter('use_ground_truth_pose').value
+        )
+        self.ground_truth_pose_topic = self.get_parameter(
+            'ground_truth_pose_topic'
+        ).value
+
     def _init_state(self):
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
         self.linear_speed = 0.0
         self.front_clearance = 0.0
+
+        self.have_ground_truth_pose = False
 
         self.role = 'follower'
         self.current_leader = ''
@@ -70,6 +84,14 @@ class SwarmMember(Node):
     def _init_ros_interfaces(self):
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.create_subscription(LaserScan, 'scan', self.scan_callback, 10)
+
+        if self.use_ground_truth_pose:
+            self.create_subscription(
+                PoseStamped,
+                self.ground_truth_pose_topic,
+                self.ground_truth_pose_callback,
+                10,
+            )
 
         self.state_pub = self.create_publisher(
             RobotState,
@@ -93,15 +115,28 @@ class SwarmMember(Node):
         period = 1.0 / self.publish_rate_hz
         self.create_timer(period, self.publish_state)
 
-    # -------------------------
-    # Callbacks
-    # -------------------------
-
     def odom_callback(self, msg: Odometry):
+        self.linear_speed = msg.twist.twist.linear.x
+
+        # If Gazebo true pose is active, do not overwrite x/y/yaw with odom.
+        if self.use_ground_truth_pose and self.have_ground_truth_pose:
+            return
+
         self.x = self.spawn_x + msg.pose.pose.position.x
         self.y = self.spawn_y + msg.pose.pose.position.y
-        self.linear_speed = msg.twist.twist.linear.x
         self.yaw = quaternion_to_yaw(msg.pose.pose.orientation)
+
+    def ground_truth_pose_callback(self, msg: PoseStamped):
+        # This pose should already be in Gazebo/world coordinates.
+        self.x = msg.pose.position.x
+        self.y = msg.pose.position.y
+        self.yaw = quaternion_to_yaw(msg.pose.orientation)
+
+        if not self.have_ground_truth_pose:
+            self.have_ground_truth_pose = True
+            # self.get_logger().info(
+            #     f'[{self.robot_name}] using Gazebo ground truth pose'
+            # )
 
     def scan_callback(self, msg: LaserScan):
         if not msg.ranges:
@@ -119,16 +154,10 @@ class SwarmMember(Node):
 
     def handle_reselect_leader(self, request, response):
         self.reselect_requested = True
-
         response.success = True
         response.message = 'Leader reselection requested.'
-
         self.get_logger().info(f'[{self.robot_name}] received reselection request')
         return response
-
-    # -------------------------
-    # Main behavior
-    # -------------------------
 
     def publish_state(self):
         now = self.get_clock().now()
@@ -141,32 +170,43 @@ class SwarmMember(Node):
         self.state_pub.publish(msg)
 
     def _update_leader_if_needed(self, now):
-        if self._should_run_election(now):
-            self.current_leader = self._elect_leader(now)
-            self.initial_election_done = True
-            self.reselect_requested = False
-            self._log_leader_change('leader selected')
+        if not self.initial_election_done:
+            if self._should_run_election(now):
+                candidates = self._get_active_candidates(now)
+
+                if len(candidates) < 4:
+                    self.current_leader = ''
+                    return
+
+                self.current_leader = self._elect_leader(now)
+                self.initial_election_done = True
+                self.reselect_requested = False
+                self._log_leader_change('leader selected')
+                return
+
+            self.current_leader = ''
             return
 
-        if not self.current_leader:
-            self.current_leader = self.robot_name
+        if self.reselect_requested:
+            self.current_leader = self._elect_leader(now)
+            self.reselect_requested = False
+            self._log_leader_change('leader reselected')
+            return
 
-        if not self.lock_leader_after_startup and self.initial_election_done:
+        if not self.lock_leader_after_startup:
             self.current_leader = self._elect_leader(now)
             self._log_leader_change('leader updated')
 
     def _should_run_election(self, now) -> bool:
         elapsed_sec = (now.nanoseconds - self.start_time_ns) / 1e9
-
         startup_ready = (
             not self.initial_election_done
             and elapsed_sec >= self.startup_election_delay_sec
         )
-
         return startup_ready or self.reselect_requested
 
     def _update_role(self):
-        if self.current_leader == self.robot_name:
+        if self.current_leader and self.current_leader == self.robot_name:
             self.role = 'leader'
         else:
             self.role = 'follower'
@@ -189,15 +229,10 @@ class SwarmMember(Node):
 
         return msg
 
-    # -------------------------
-    # Leader election
-    # -------------------------
-
     def _compute_leader_score(self) -> float:
         open_space_term = min(self.front_clearance, 3.0)
         speed_term = max(self.linear_speed, 0.0)
         tie_break = robot_name_tiebreak(self.robot_name)
-
         return 2.0 * open_space_term + 0.5 * speed_term + tie_break
 
     def _elect_leader(self, now) -> str:
@@ -206,28 +241,16 @@ class SwarmMember(Node):
         if not candidates:
             return self.robot_name
 
-        # -------------------------
-        # 1. Find "front row"
-        # (assuming robots face +X direction)
-        # -------------------------
         max_x = max(state.x for state in candidates)
 
-        # robots close to max_x are "front row"
         front_row = [
             state for state in candidates
-            if abs(state.x - max_x) < 0.3   # tolerance
+            if abs(state.x - max_x) < 0.3
         ]
 
         if not front_row:
             front_row = candidates
 
-        # -------------------------
-        # 2. Decide LEFT vs RIGHT
-        # -------------------------
-        # Option A (simple): always pick leftmost
-        # leader = min(front_row, key=lambda s: s.y)
-
-        # Option B (better): pick side with more open space
         leader = max(
             front_row,
             key=lambda s: (
@@ -235,7 +258,7 @@ class SwarmMember(Node):
                 s.x,
                 s.y,
                 robot_name_tiebreak(s.robot_name),
-            )
+            ),
         )
 
         return leader.robot_name
@@ -255,9 +278,9 @@ class SwarmMember(Node):
         if self.current_leader == self.last_logged_leader:
             return
 
-        self.get_logger().info(
-            f'[{self.robot_name}] {label}: {self.current_leader}'
-        )
+        # self.get_logger().info(
+        #     f'[{self.robot_name}] {label}: {self.current_leader}'
+        # )
         self.last_logged_leader = self.current_leader
 
 

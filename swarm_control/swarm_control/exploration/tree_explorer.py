@@ -1,6 +1,5 @@
 import math
 import re
-from swarm_control.core.math_utils import quaternion_to_yaw, normalize_angle
 
 import rclpy
 from rclpy.node import Node
@@ -11,6 +10,7 @@ from sensor_msgs.msg import LaserScan
 from swarm_interfaces.msg import RobotState
 
 from swarm_control.core.cmd_utils import make_twist
+from swarm_control.core.math_utils import quaternion_to_yaw, normalize_angle
 from swarm_control.core.scan_utils import sector_min, sector_avg
 
 
@@ -29,9 +29,9 @@ class TreeExplorer(Node):
         self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel_raw')
 
-        self.declare_parameter('forward_speed', 0.12)
-        self.declare_parameter('turn_speed', 0.65)
-        self.declare_parameter('front_blocked_distance', 0.85)
+        self.declare_parameter('forward_speed', 0.060)
+        self.declare_parameter('turn_speed', 0.55)
+        self.declare_parameter('front_blocked_distance', 1.25)
 
         self.declare_parameter('spawn_x', 0.0)
         self.declare_parameter('spawn_y', 0.0)
@@ -39,20 +39,20 @@ class TreeExplorer(Node):
         self.declare_parameter('chain_spacing_m', 0.9)
         self.declare_parameter('formation_tolerance_m', 0.35)
 
-        self.declare_parameter('leader_start_delay_sec', 8.0)
+        self.declare_parameter('leader_start_delay_sec', 15.0)
 
-        # New: leader waits/slows down if the relay chain stretches too much.
-        self.declare_parameter('leader_wait_for_chain', True)
-        self.declare_parameter('leader_slow_chain_gap_m', 1.4)
-        self.declare_parameter('leader_max_chain_gap_m', 2.0)
+        # Keep this false until basic movement is stable.
+        self.declare_parameter('leader_wait_for_chain', False)
+        self.declare_parameter('leader_slow_chain_gap_m', 2.00)
+        self.declare_parameter('leader_max_chain_gap_m', 2.60)
         self.declare_parameter('leader_wait_turn_allowed', True)
 
         self.declare_parameter('side_clearance_distance', 0.75)
-        self.declare_parameter('side_avoid_turn_gain', 0.35)
+        self.declare_parameter('side_avoid_turn_gain', 0.30)
 
         self.declare_parameter('preferred_heading_deg', 90.0)
-        self.declare_parameter('heading_gain', 0.9)
-        self.declare_parameter('max_heading_turn', 0.45)
+        self.declare_parameter('heading_gain', 0.65)
+        self.declare_parameter('max_heading_turn', 0.35)
 
         self.declare_parameter('obstacle_escape_enabled', True)
         self.declare_parameter('escape_front_clear_distance', 1.60)
@@ -106,25 +106,18 @@ class TreeExplorer(Node):
         )
         self.preferred_heading = math.radians(self.preferred_heading_deg)
 
-        self.heading_gain = float(
-            self.get_parameter('heading_gain').value
-        )
-        self.max_heading_turn = float(
-            self.get_parameter('max_heading_turn').value
-        )
+        self.heading_gain = float(self.get_parameter('heading_gain').value)
+        self.max_heading_turn = float(self.get_parameter('max_heading_turn').value)
 
         self.obstacle_escape_enabled = bool(
             self.get_parameter('obstacle_escape_enabled').value
         )
-
         self.escape_front_clear_distance = float(
             self.get_parameter('escape_front_clear_distance').value
         )
-
         self.escape_rejoin_heading_error_deg = float(
             self.get_parameter('escape_rejoin_heading_error_deg').value
         )
-
         self.escape_min_time_sec = float(
             self.get_parameter('escape_min_time_sec').value
         )
@@ -133,6 +126,7 @@ class TreeExplorer(Node):
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
+        self.have_self_state = False
 
         self.is_leader = False
         self.current_role = 'follower'
@@ -143,14 +137,12 @@ class TreeExplorer(Node):
         self.front = float('inf')
         self.front_left = float('inf')
         self.front_right = float('inf')
+        self.left = float('inf')
+        self.right = float('inf')
 
         self.became_leader_time_ns = None
         self.last_chain_status_log_ns = 0
-
         self.locked_chain_order = []
-
-        self.left = float('inf')
-        self.right = float('inf')
 
         self.escape_mode = False
         self.escape_start_ns = 0
@@ -180,16 +172,25 @@ class TreeExplorer(Node):
 
         self.create_timer(0.1, self.control_loop)
 
-    def odom_callback(self, msg: Odometry):
+    def odom_callback(self, msg):
+        # Fallback only, before /swarm/robot_states for this robot arrives.
+        if self.have_self_state:
+            return
+
         self.x = self.spawn_x + msg.pose.pose.position.x
         self.y = self.spawn_y + msg.pose.pose.position.y
         self.yaw = quaternion_to_yaw(msg.pose.pose.orientation)
 
-    def state_callback(self, msg: RobotState):
+    def state_callback(self, msg):
         self.other_robots[msg.robot_name] = msg
 
         if msg.robot_name != self.robot_name:
             return
+
+        self.x = msg.x
+        self.y = msg.y
+        self.yaw = msg.yaw
+        self.have_self_state = True
 
         was_leader = self.is_leader
 
@@ -204,7 +205,7 @@ class TreeExplorer(Node):
                 f'{self.leader_start_delay_sec:.1f}s before exploring'
             )
 
-    def scan_callback(self, msg: LaserScan):
+    def scan_callback(self, msg):
         if not msg.ranges:
             return
 
@@ -216,8 +217,10 @@ class TreeExplorer(Node):
         self.right = sector_min(msg, -math.pi / 2.0, 0.55)
 
     def control_loop(self):
-        # Non-leaders are controlled by path_follower.
-        # Do not publish stop here, or this node will fight the follower.
+        if not self.have_self_state:
+            self._publish_stop()
+            return
+
         if not self.is_leader:
             return
 
@@ -229,9 +232,6 @@ class TreeExplorer(Node):
 
         if self.leader_wait_for_chain:
             scale = self._chain_speed_scale()
-
-            # If chain is stretched, slow/stop only forward movement.
-            # Turning can still be useful to avoid obstacles.
             linear *= scale
 
             if scale <= 0.01 and not self.leader_wait_turn_allowed:
@@ -260,18 +260,18 @@ class TreeExplorer(Node):
             return self._turn_toward_open_space()
 
         if self.obstacle_escape_enabled and self.escape_mode:
-            elapsed = (self.get_clock().now().nanoseconds - self.escape_start_ns) / 1e9
+            elapsed = (
+                self.get_clock().now().nanoseconds - self.escape_start_ns
+            ) / 1e9
 
             heading_error_ok = abs(heading_error) < math.radians(
                 self.escape_rejoin_heading_error_deg
             )
-
             front_clear = self.front > self.escape_front_clear_distance
 
             if elapsed >= self.escape_min_time_sec and front_clear and heading_error_ok:
                 self.escape_mode = False
             else:
-                # While escaping, do not force north.
                 linear = min(self.forward_speed, 0.045)
 
                 if self.left < self.side_clearance_distance:
@@ -280,8 +280,9 @@ class TreeExplorer(Node):
                 if self.right < self.side_clearance_distance:
                     return linear, self.side_avoid_turn_gain
 
-                # Continue gently in current direction.
-                return linear, 0.0
+                angular = self.heading_gain * heading_error
+                angular = max(-self.max_heading_turn, min(self.max_heading_turn, angular))
+                return linear, angular
 
         angular = self.heading_gain * heading_error
         angular = max(-self.max_heading_turn, min(self.max_heading_turn, angular))
@@ -298,48 +299,36 @@ class TreeExplorer(Node):
 
         return linear, angular
 
-
     def _turn_toward_open_space(self):
         if self.front_left >= self.front_right:
             return 0.02, self.turn_speed
 
         return 0.02, -self.turn_speed
 
-    # ------------------------------------------------------------------
-    # Chain gap / relay continuity
-    # ------------------------------------------------------------------
-
     def _chain_speed_scale(self):
         order = self._get_chain_order()
 
-        # No followers yet: allow leader to move.
         if len(order) <= 1:
             return 1.0
 
         max_gap = self._max_chain_gap(order)
-
         self._log_chain_status(order, max_gap)
 
         if max_gap >= self.leader_max_chain_gap_m:
             return 0.0
 
         if max_gap >= self.leader_slow_chain_gap_m:
-            # Smooth slowdown between slow gap and max gap.
             span = self.leader_max_chain_gap_m - self.leader_slow_chain_gap_m
 
             if span <= 0.01:
                 return 0.0
 
-            scale = 1.0 - (
-                (max_gap - self.leader_slow_chain_gap_m) / span
-            )
-
+            scale = 1.0 - ((max_gap - self.leader_slow_chain_gap_m) / span)
             return max(0.25, min(1.0, scale))
 
         return 1.0
 
     def _get_chain_order(self):
-        # Once locked, never reorder while driving.
         if self.locked_chain_order:
             return self.locked_chain_order
 
@@ -353,47 +342,13 @@ class TreeExplorer(Node):
         if self.robot_name not in names:
             names.append(self.robot_name)
 
-        states = {
-            r.robot_name: r
-            for r in robots
-        }
-
-        if self.robot_name not in states:
-            fake_self = RobotState()
-            fake_self.robot_name = self.robot_name
-            fake_self.x = self.x
-            fake_self.y = self.y
-            fake_self.yaw = self.yaw
-            fake_self.active = True
-            states[self.robot_name] = fake_self
-
-        leader = states.get(self.robot_name)
-
-        if leader is None:
-            return []
-
-        fx = math.cos(leader.yaw)
-        fy = math.sin(leader.yaw)
-
-        def along_leader_axis(name):
-            r = states[name]
-            dx = r.x - leader.x
-            dy = r.y - leader.y
-            return dx * fx + dy * fy
-
-        ordered = sorted(
-            names,
-            key=along_leader_axis,
-            reverse=True,
-        )
+        ordered = sorted(names, key=self.robot_number)
 
         if self.robot_name in ordered:
             ordered.remove(self.robot_name)
 
         order = [self.robot_name] + ordered
 
-        # Lock only when we see all 4 robots.
-        # Change this if you later use 5 or 6 robots.
         if len(order) >= 4:
             self.locked_chain_order = order
             self.get_logger().info(
@@ -403,9 +358,6 @@ class TreeExplorer(Node):
         return order
 
     def _max_chain_gap(self, order):
-        if len(order) < 2:
-            return 0.0
-
         max_gap = 0.0
 
         for a, b in zip(order[:-1], order[1:]):
@@ -434,16 +386,19 @@ class TreeExplorer(Node):
     def _log_chain_status(self, order, max_gap):
         now_ns = self.get_clock().now().nanoseconds
 
-        # Log about once every 2 seconds.
         if now_ns - self.last_chain_status_log_ns < 2_000_000_000:
             return
 
         self.last_chain_status_log_ns = now_ns
 
-        self.get_logger().info(
-            f'[{self.robot_name}] chain={" -> ".join(order)} '
-            f'max_gap={max_gap:.2f}m'
-        )
+        # self.get_logger().info(
+        #     f'[{self.robot_name}] chain={" -> ".join(order)} '
+        #     f'max_gap={max_gap:.2f}m'
+        # )
+
+    def robot_number(self, name):
+        match = re.search(r'\d+', name)
+        return int(match.group()) if match else 999
 
     def _publish_stop(self):
         self.cmd_pub.publish(make_twist())

@@ -116,10 +116,10 @@ class BreadcrumbManager(Node):
         self.last_breadcrumb_x = self.world_x
         self.last_breadcrumb_y = self.world_y
 
-        self.get_logger().info(
-            f'[{self.robot_name}] breadcrumb {breadcrumb_id}: '
-            f'x={self.world_x:.2f}, y={self.world_y:.2f}'
-        )
+        # self.get_logger().info(
+        #     f'[{self.robot_name}] breadcrumb {breadcrumb_id}: '
+        #     f'x={self.world_x:.2f}, y={self.world_y:.2f}'
+        # )
 
     def publish_markers(self):
         markers = MarkerArray()

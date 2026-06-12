@@ -36,19 +36,18 @@ setup(
     entry_points={
         'console_scripts': [
             'cmd_vel_safety_filter = swarm_control.control.cmd_vel_safety_filter:main',
-            'leader_goal_controller = swarm_control.control.leader_goal_controller:main',
-            'simple_chain_follower = swarm_control.swarm.simple_chain_follower:main',
             'path_follower = swarm_control.control.path_follower:main',
-
+            'ground_truth_to_tf = swarm_control.control.ground_truth_to_tf:main',
+            
             'swarm_member = swarm_control.swarm.swarm_member:main',
             'formation_manager = swarm_control.swarm.formation_manager:main',
             'leader_path_publisher = swarm_control.swarm.leader_path_publisher:main',
 
-            'odom_to_tf = swarm_control.localization.odom_to_tf:main',
-
             'tree_explorer = swarm_control.exploration.tree_explorer:main',
             'breadcrumb_manager = swarm_control.exploration.breadcrumb_manager:main',
             'line_alignment_monitor = swarm_control.swarm.line_alignment_monitor:main',
+            'gazebo_pose_bridge = swarm_control.control.gazebo_pose_bridge:main',
+        
         ],
     },
 )

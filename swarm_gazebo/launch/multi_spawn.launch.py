@@ -25,6 +25,9 @@ def generate_launch_description():
 
     actions = []
 
+    # ------------------------------------------------------------
+    # Start Gazebo
+    # ------------------------------------------------------------
     actions.append(
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -34,6 +37,9 @@ def generate_launch_description():
         )
     )
 
+    # ------------------------------------------------------------
+    # Clock bridge
+    # ------------------------------------------------------------
     actions.append(
         Node(
             package='ros_gz_bridge',
@@ -49,28 +55,67 @@ def generate_launch_description():
         )
     )
 
+    # ------------------------------------------------------------
+    # Gazebo true-pose bridge
+    #
+    # IMPORTANT:
+    # These two nodes are global. They must be started ONCE,
+    # not once per robot.
+    # ------------------------------------------------------------
     actions.append(
         Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='world_to_robot1_map',
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            name='gazebo_dynamic_pose_tf_bridge',
+            output='screen',
             arguments=[
-                '--x', '0.0',
-                '--y', '-9.0',
-                '--z', '0.0',
-                '--yaw', '-0.045',
-                '--frame-id', 'world',
-                '--child-frame-id', 'robot1/map',
+                f'/world/{world_name}/dynamic_pose/info'
+                '@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
             ],
         )
     )
 
+    actions.append(
+        Node(
+            package='swarm_control',
+            executable='gazebo_pose_bridge',
+            name='gazebo_pose_bridge',
+            output='screen',
+            parameters=[
+                {'use_sim_time': True},
+                {'gazebo_pose_topic': f'/world/{world_name}/dynamic_pose/info'},
+                {'robot_names': active_robots},
+            ],
+        )
+    )
+
+    # # Optional map transform
+    # actions.append(
+    #     Node(
+    #         package='tf2_ros',
+    #         executable='static_transform_publisher',
+    #         name='world_to_robot1_map',
+    #         arguments=[
+    #             '--x', '0.0',
+    #             '--y', '-9.0',
+    #             '--z', '0.0',
+    #             '--yaw', '-0.045',
+    #             '--frame-id', 'world',
+    #             '--child-frame-id', 'robot1/map',
+    #         ],
+    #     )
+    # )
+
+    # ------------------------------------------------------------
+    # Per-robot nodes
+    # ------------------------------------------------------------
     for robot in robots:
         ns = robot['name']
         is_active = ns in active_robots
         spawn_x = float(robot['x'])
         spawn_y = float(robot['y'])
 
+        # Spawn robot
         actions.append(
             Node(
                 package='ros_gz_sim',
@@ -87,22 +132,24 @@ def generate_launch_description():
             )
         )
 
-        actions.append(
-            Node(
-                package='tf2_ros',
-                executable='static_transform_publisher',
-                name=f'world_to_{ns}_odom',
-                arguments=[
-                    '--x', robot['x'],
-                    '--y', robot['y'],
-                    '--z', '0.0',
-                    '--yaw', '0.0',
-                    '--frame-id', 'world',
-                    '--child-frame-id', f'{ns}/odom',
-                ],
-            )
-        )
+        # Keep this TF for RViz odom visualization.
+        # actions.append(
+        #     Node(
+        #         package='tf2_ros',
+        #         executable='static_transform_publisher',
+        #         # name=f'world_to_{ns}_odom',
+        #         arguments=[
+        #             '--x', robot['x'],
+        #             '--y', robot['y'],
+        #             '--z', '0.0',
+        #             '--yaw', '0.0',
+        #             '--frame-id', 'world',
+        #             '--child-frame-id', f'{ns}/odom',
+        #         ],
+        #     )
+        # )
 
+        # Per-robot command, odom, and lidar bridges.
         actions.append(
             Node(
                 package='ros_gz_bridge',
@@ -133,22 +180,20 @@ def generate_launch_description():
         actions.append(
             Node(
                 package='swarm_control',
-                executable='odom_to_tf',
+                executable='ground_truth_to_tf',
                 namespace=ns,
-                name='odom_to_tf',
+                name='ground_truth_to_tf',
                 output='screen',
                 parameters=[
                     {'use_sim_time': True},
                     {'robot_name': ns},
-                    {'odom_topic': 'odom'},
-                    {'base_frame': f'{ns}/chassis'},
-                    {'odom_frame': f'{ns}/odom'},
+                    {'pose_topic': 'ground_truth_pose'},
+                    {'parent_frame': 'world'},
+                    {'child_frame': f'{ns}/chassis'},
                 ],
             )
         )
 
-        # If your SDF still has lidar at x=0.10 z=0.12, change this back.
-        # If you use the centered/debug model, this is correct.
         actions.append(
             Node(
                 package='tf2_ros',
@@ -165,6 +210,7 @@ def generate_launch_description():
             )
         )
 
+        # SwarmMember now uses Gazebo true pose.
         actions.append(
             Node(
                 package='swarm_control',
@@ -176,9 +222,15 @@ def generate_launch_description():
                     {'use_sim_time': True},
                     {'robot_name': ns},
                     {'publish_rate_hz': 5.0},
-                    {'state_timeout_sec': 1.5},
+                    {'state_timeout_sec': 3.0},
                     {'lock_leader_after_startup': True},
-                    {'startup_election_delay_sec': 4.0},
+                    {'startup_election_delay_sec': 6.0},
+
+                    # Ground-truth pose from gazebo_pose_bridge.
+                    {'use_ground_truth_pose': True},
+                    {'ground_truth_pose_topic': 'ground_truth_pose'},
+
+                    # Fallback only. Ignored after ground truth starts.
                     {'spawn_x': spawn_x},
                     {'spawn_y': spawn_y},
                 ],
@@ -196,12 +248,14 @@ def generate_launch_description():
                     {'use_sim_time': True},
                     {'robot_name': ns},
                     {'path_topic': '/swarm/leader_path'},
-                    {'append_distance': 0.05},
-                    {'append_yaw_delta': 0.05},
+                    {'append_distance': 0.12},
+                    {'append_yaw_delta': 999.0},
                     {'max_path_points': 4000},
                     {'frame_id': 'world'},
-                    {'spawn_x': spawn_x},
-                    {'spawn_y': spawn_y},
+
+                    # Keep zero because RobotState is now world ground truth.
+                    {'spawn_x': 0.0},
+                    {'spawn_y': 0.0},
                 ],
             )
         )
@@ -216,9 +270,24 @@ def generate_launch_description():
                 parameters=[
                     {'use_sim_time': True},
                     {'robot_name': ns},
-                    {'spawn_x': spawn_x},
-                    {'spawn_y': spawn_y},
-                    {'post_election_wait_sec': 4.5},
+
+                    # Keep zero with ground-truth/world RobotState.
+                    {'spawn_x': 0.0},
+                    {'spawn_y': 0.0},
+
+                    {'post_election_wait_sec': 1.0},
+                    {'chain_spacing_m': 1.15},
+                    {'formation_heading_deg': 0.0},
+
+                    {'goal_tolerance_m': 0.45},
+                    {'yaw_tolerance_rad': 0.60},
+
+                    {'max_linear_speed': 0.10},
+                    {'max_angular_speed': 0.55},
+                    {'linear_gain': 0.55},
+                    {'angular_gain': 0.85},
+
+                    {'hold_ready_after_aligned_sec': 0.25},
                 ],
             )
         )
@@ -235,8 +304,10 @@ def generate_launch_description():
                     {'robot_name': ns},
                     {'cmd_vel_topic': 'cmd_vel_raw'},
                     {'path_topic': '/swarm/leader_path'},
-                    {'spawn_x': spawn_x},
-                    {'spawn_y': spawn_y},
+
+                    # Keep zero with ground-truth/world RobotState.
+                    {'spawn_x': 0.0},
+                    {'spawn_y': 0.0},
 
                     {'lookahead_m': 0.25},
                     {'goal_tolerance_m': 0.06},
@@ -245,8 +316,7 @@ def generate_launch_description():
                     {'desired_follow_distance_m': 1.15},
                     {'follow_deadband_m': 0.18},
 
-                    # Followers are slightly faster than leader so they can catch up.
-                    {'max_linear_speed': 0.14},
+                    {'max_linear_speed': 0.12},
                     {'min_linear_speed_when_far': 0.04},
                     {'max_angular_speed': 1.10},
                     {'linear_gain': 0.45},
@@ -256,30 +326,29 @@ def generate_launch_description():
                     {'slow_robot_distance_m': 0.85},
                     {'too_close_reverse_speed': -0.02},
 
-                    # Catch up earlier.
-                    {'far_gap_m': 1.25},
-                    {'very_far_gap_m': 1.75},
-                    {'catchup_speed_boost': 1.35},
+                    {'far_gap_m': 1.50},
+                    {'very_far_gap_m': 2.10},
+                    {'catchup_speed_boost': 1.15},
 
-                    {'startup_delay_per_slot_sec': 0.40},
+                    {'startup_delay_per_slot_sec': 1.8},
                     {'lock_chain_order': True},
                     {'fallback_to_predecessor': True},
 
-                    {'cross_track_gain': 0.55},
-                    {'max_cross_track_correction_rad': 0.35},
+                    {'cross_track_gain': 1.10},
+                    {'max_cross_track_correction_rad':  0.35},
 
                     {'line_hold_enabled': True},
-                    {'line_hold_gain': 0.50},
-                    {'line_hold_integral_gain': 0.08},
-                    {'line_hold_start_delay_sec': 2.0},
-                    {'line_hold_max_correction_rad': 0.45},
+                    {'line_hold_gain': 0.95},
+                    {'line_hold_integral_gain': 0.10},
+                    {'line_hold_start_delay_sec': 0.5},
+                    {'line_hold_max_correction_rad': 0.35},
                     {'line_hold_integral_limit': 0.35},
 
                     {'resync_enabled': True},
-                    {'resync_lateral_error_m': 0.18},
-                    {'resync_release_error_m': 0.07},
-                    {'resync_angular_boost': 1.8},
-                    {'resync_speed_scale': 0.55},
+                    {'resync_lateral_error_m': 0.10},
+                    {'resync_release_error_m': 0.04},
+                    {'resync_angular_boost': 1.60},
+                    {'resync_speed_scale': 0.40},
                 ],
             )
         )
@@ -296,37 +365,31 @@ def generate_launch_description():
                     {'robot_name': ns},
                     {'cmd_vel_topic': 'cmd_vel_raw'},
 
-                    # Leader speed lower than follower max speed.
-                    {'forward_speed': 0.060},
-                    {'turn_speed': 0.55},
+                    {'forward_speed': 0.10},
+                    {'turn_speed': 0.60},
 
-                    # Obstacle clearance.
                     {'front_blocked_distance': 1.25},
                     {'side_clearance_distance': 0.75},
                     {'side_avoid_turn_gain': 0.30},
 
-                    {'spawn_x': spawn_x},
-                    {'spawn_y': spawn_y},
-                    {'chain_spacing_m': 0.9},
+                    # Keep zero with ground-truth/world RobotState.
+                    {'spawn_x': 0.0},
+                    {'spawn_y': 0.0},
+
+                    {'chain_spacing_m': 1.15},
                     {'formation_tolerance_m': 0.35},
 
-                    {'leader_start_delay_sec': 7.0},
+                    {'leader_start_delay_sec': 1.5},
                     {'leader_wait_for_chain': True},
 
-                    # Leader slows/stops much earlier when chain stretches.
-                    {'leader_slow_chain_gap_m': 1.45},
-                    {'leader_max_chain_gap_m': 1.90},
+                    {'leader_slow_chain_gap_m': 1.80},
+                    {'leader_max_chain_gap_m': 2.40},
                     {'leader_wait_turn_allowed': True},
 
-                    # Directional exploration.
-                    # 90 = +Y/north in normal ROS coordinates.
-                    # If your world uses +X as north, set this to 0.0.
                     {'preferred_heading_deg': 0.0},
                     {'heading_gain': 0.65},
                     {'max_heading_turn': 0.35},
 
-                    # These only work after you add the blocked-mode logic
-                    # described below in tree_explorer.py.
                     {'obstacle_escape_enabled': True},
                     {'escape_front_clear_distance': 1.60},
                     {'escape_rejoin_heading_error_deg': 25.0},
@@ -346,13 +409,44 @@ def generate_launch_description():
                     {'use_sim_time': True},
                     {'robot_name': ns},
                     {'frame_id': 'world'},
-                    {'spawn_x': spawn_x},
-                    {'spawn_y': spawn_y},
+
+                    # Keep zero with ground-truth/world RobotState.
+                    {'spawn_x': 0.0},
+                    {'spawn_y': 0.0},
+
                     {'breadcrumb_distance': 1.0},
                     {'marker_topic': '/swarm/breadcrumb_markers_array'},
                 ],
             )
         )
+
+        
+        # SLAM toolbox — leader only onyl for testing commented out
+        if ns == 'robot1':
+            actions.append(
+                Node(
+                    package='slam_toolbox',
+                    executable='async_slam_toolbox_node',
+                    namespace=ns,
+                    name='slam_toolbox',
+                    output='screen',
+                    parameters=[{
+                        'use_sim_time': True,
+                        'mode': 'mapping',
+                        'odom_frame': 'world',
+                        'base_frame': f'{ns}/chassis',
+                        'map_frame': f'{ns}/map',
+                        'scan_topic': 'scan',
+                        'map_name': 'map',
+                        'resolution': 0.08,
+                        'minimum_travel_distance': 0.10,
+                        'minimum_travel_heading': 0.10,
+                    }],
+                    remappings=[
+                        ('scan', 'scan'),
+                    ],
+                )
+            )
 
         actions.append(
             Node(
@@ -366,7 +460,6 @@ def generate_launch_description():
                     {'robot_name': ns},
                     {'enabled': True},
 
-                    # Earlier reaction.
                     {'hard_stop_distance': 0.45},
                     {'slowdown_distance': 1.00},
                     {'side_stop_distance': 0.22},
@@ -378,6 +471,9 @@ def generate_launch_description():
             )
         )
 
+    # ------------------------------------------------------------
+    # Global line monitor
+    # ------------------------------------------------------------
     actions.append(
         Node(
             package='swarm_control',
@@ -390,7 +486,7 @@ def generate_launch_description():
                 {'state_topic': '/swarm/robot_states'},
                 {'chain_order_topic': '/swarm/chain_order'},
                 {'output_topic': '/swarm/line_alignment'},
-                {'check_period_sec': 1.0},
+                {'check_period_sec': 2.0},
 
                 {'warn_path_lateral_error_m': 0.12},
                 {'bad_path_lateral_error_m': 0.22},
@@ -413,27 +509,3 @@ def generate_launch_description():
     )
 
     return LaunchDescription(actions)
-        # SLAM toolbox — leader only onyl for testing commented out
-        # if ns == 'robot1':
-        #     actions.append(
-        #         Node(
-        #             package='slam_toolbox',
-        #             executable='async_slam_toolbox_node',
-        #             namespace=ns, name='slam_toolbox', output='screen',
-        #             parameters=[{
-        #                 'use_sim_time': True,
-        #                 'mode': 'mapping',
-        #                 'transform_publish_period': 0.1,
-        #                 'odom_frame': f'{ns}/odom',
-        #                 'base_frame': f'{ns}/chassis',
-        #                 'map_frame': f'{ns}/map',
-        #                 'scan_topic': 'scan',
-        #                 'map_name': 'map',
-        #                 'resolution': 0.08,
-        #                 'minimum_travel_distance': 0.10,
-        #                 'minimum_travel_heading': 0.10,
-        #             }],
-        #             remappings=[('scan', 'scan')]
-        #         )
-        #     )
-
