@@ -1,12 +1,13 @@
 import json
 import math
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry, Path
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
 from swarm_interfaces.msg import RobotState
 
@@ -14,6 +15,25 @@ from swarm_control.core.math_utils import normalize_angle, quaternion_to_yaw
 
 
 class PathFollower(Node):
+    """
+    Simplified chain follower.
+
+    Main responsibility:
+      - Followers maintain a chain behind their predecessor.
+      - robot2 follows the leader.
+      - robot3 follows robot2.
+      - robot4 follows robot3.
+      - No leader-path arc-length sampling.
+      - No line-hold controller.
+      - No resync controller.
+
+    Why this version is simpler:
+      - Formation is based on predecessor spacing, not historical path slots.
+      - There is only one steering controller.
+      - Followers start earlier using a configurable startup gap ratio.
+      - The file still publishes /swarm/chain_order for debug/safety-filter use.
+    """
+
     def __init__(self):
         super().__init__('path_follower')
 
@@ -22,105 +42,132 @@ class PathFollower(Node):
         self._init_state()
         self._init_ros_interfaces()
 
-        self.get_logger().info(f'[{self.robot_name}] path_follower started')
+        self.get_logger().info(f'[{self.robot_name}] simplified path_follower started')
+
+    # ------------------------------------------------------------------
+    # Parameters
+    # ------------------------------------------------------------------
 
     def _declare_parameters(self):
         self.declare_parameter('robot_name', 'robot2')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel_raw')
+
+        # Kept for launch-file compatibility. This simplified follower does not
+        # subscribe to /swarm/leader_path.
         self.declare_parameter('path_topic', '/swarm/leader_path')
 
         self.declare_parameter('spawn_x', 0.0)
         self.declare_parameter('spawn_y', 0.0)
 
-        self.declare_parameter('lookahead_m', 0.25)
-        self.declare_parameter('goal_tolerance_m', 0.06)
-        self.declare_parameter('min_path_length_m', 0.25)
-
         self.declare_parameter('desired_follow_distance_m', 1.15)
-        self.declare_parameter('follow_deadband_m', 0.25)
+        self.declare_parameter('follow_deadband_m', 0.18)
 
-        self.declare_parameter('max_linear_speed', 0.12)
-        self.declare_parameter('min_linear_speed_when_far', 0.035)
-        self.declare_parameter('max_angular_speed', 1.10)
-        self.declare_parameter('linear_gain', 0.55)
-        self.declare_parameter('angular_gain', 1.55)
+        self.declare_parameter('max_linear_speed', 0.22)
+        self.declare_parameter('min_linear_speed_when_far', 0.07)
+        self.declare_parameter('max_angular_speed', 1.60)
+        self.declare_parameter('linear_gain', 0.75)
+        self.declare_parameter('angular_gain', 1.80)
 
         self.declare_parameter('min_robot_distance_m', 0.50)
         self.declare_parameter('slow_robot_distance_m', 0.85)
         self.declare_parameter('too_close_reverse_speed', -0.02)
 
-        self.declare_parameter('far_gap_m', 1.65)
-        self.declare_parameter('very_far_gap_m', 2.30)
-        self.declare_parameter('catchup_speed_boost', 1.15)
+        self.declare_parameter('far_gap_m', 1.45)
+        self.declare_parameter('very_far_gap_m', 2.00)
+        self.declare_parameter('catchup_speed_boost', 1.50)
 
-        self.declare_parameter('startup_delay_per_slot_sec', 0.40)
+        # Followers are released once their predecessor opens enough space.
+        # Old code used desired_follow_distance_m * 0.95, which made startup slow.
+        self.declare_parameter('startup_gap_ratio', 0.60)
+
         self.declare_parameter('lock_chain_order', True)
-        self.declare_parameter('fallback_to_predecessor', True)
 
+        # Kept for launch-file compatibility, but unused in this simplified file.
+        self.declare_parameter('lookahead_m', 0.25)
+        self.declare_parameter('goal_tolerance_m', 0.06)
+        self.declare_parameter('min_path_length_m', 0.25)
+        self.declare_parameter('fallback_to_predecessor', True)
+        self.declare_parameter('startup_delay_per_slot_sec', 0.0)
         self.declare_parameter('cross_track_gain', 1.10)
         self.declare_parameter('max_cross_track_correction_rad', 0.35)
+        self.declare_parameter('line_hold_enabled', False)
+        self.declare_parameter('line_hold_gain', 0.0)
+        self.declare_parameter('line_hold_integral_gain', 0.0)
+        self.declare_parameter('line_hold_integral_limit', 0.0)
+        self.declare_parameter('line_hold_start_delay_sec', 0.0)
+        self.declare_parameter('line_hold_max_correction_rad', 0.0)
+        self.declare_parameter('resync_enabled', False)
+        self.declare_parameter('resync_lateral_error_m', 0.0)
+        self.declare_parameter('resync_release_error_m', 0.0)
+        self.declare_parameter('resync_angular_boost', 1.0)
+        self.declare_parameter('resync_speed_scale', 1.0)
 
-        self.declare_parameter('line_hold_enabled', True)
-        self.declare_parameter('line_hold_gain', 0.90)
-        self.declare_parameter('line_hold_integral_gain', 0.10)
-        self.declare_parameter('line_hold_integral_limit', 0.35)
-        self.declare_parameter('line_hold_start_delay_sec', 5.0)
-        self.declare_parameter('line_hold_max_correction_rad', 0.60)
+        self.declare_parameter('hold_gap_deadband_m', 0.12)
+        self.declare_parameter('hold_heading_deadband_rad', 0.20)
 
-        self.declare_parameter('resync_enabled', True)
-        self.declare_parameter('resync_lateral_error_m', 0.10)
-        self.declare_parameter('resync_release_error_m', 0.04)
-        self.declare_parameter('resync_angular_boost', 2.50)
-        self.declare_parameter('resync_speed_scale', 0.40)
+        # Smooth following instead of start/stop behavior.
+        # If the predecessor is moving slowly, followers try to match that speed.
+        self.declare_parameter('speed_match_enabled', True)
+        self.declare_parameter('speed_match_gain', 0.85)
+        self.declare_parameter('min_creep_speed', 0.025)
+        self.declare_parameter('command_smoothing_alpha_linear', 0.35)
+        self.declare_parameter('command_smoothing_alpha_angular', 0.30)
 
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
-        self.path_topic = self.get_parameter('path_topic').value
 
         self.spawn_x = float(self.get_parameter('spawn_x').value)
         self.spawn_y = float(self.get_parameter('spawn_y').value)
 
-        self.lookahead_m = float(self.get_parameter('lookahead_m').value)
-        self.goal_tolerance_m = float(self.get_parameter('goal_tolerance_m').value)
-        self.min_path_length_m = float(self.get_parameter('min_path_length_m').value)
-
-        self.desired_follow_distance_m = float(self.get_parameter('desired_follow_distance_m').value)
+        self.desired_follow_distance_m = float(
+            self.get_parameter('desired_follow_distance_m').value
+        )
         self.follow_deadband_m = float(self.get_parameter('follow_deadband_m').value)
 
         self.max_linear_speed = float(self.get_parameter('max_linear_speed').value)
-        self.min_linear_speed_when_far = float(self.get_parameter('min_linear_speed_when_far').value)
+        self.min_linear_speed_when_far = float(
+            self.get_parameter('min_linear_speed_when_far').value
+        )
         self.max_angular_speed = float(self.get_parameter('max_angular_speed').value)
         self.linear_gain = float(self.get_parameter('linear_gain').value)
         self.angular_gain = float(self.get_parameter('angular_gain').value)
 
         self.min_robot_distance_m = float(self.get_parameter('min_robot_distance_m').value)
         self.slow_robot_distance_m = float(self.get_parameter('slow_robot_distance_m').value)
-        self.too_close_reverse_speed = float(self.get_parameter('too_close_reverse_speed').value)
+        self.too_close_reverse_speed = float(
+            self.get_parameter('too_close_reverse_speed').value
+        )
 
         self.far_gap_m = float(self.get_parameter('far_gap_m').value)
         self.very_far_gap_m = float(self.get_parameter('very_far_gap_m').value)
         self.catchup_speed_boost = float(self.get_parameter('catchup_speed_boost').value)
 
-        self.startup_delay_per_slot_sec = float(self.get_parameter('startup_delay_per_slot_sec').value)
+        self.startup_gap_ratio = float(self.get_parameter('startup_gap_ratio').value)
         self.lock_chain_order = bool(self.get_parameter('lock_chain_order').value)
-        self.fallback_to_predecessor = bool(self.get_parameter('fallback_to_predecessor').value)
 
-        self.cross_track_gain = float(self.get_parameter('cross_track_gain').value)
-        self.max_cross_track_correction_rad = float(self.get_parameter('max_cross_track_correction_rad').value)
+        self.hold_gap_deadband_m = float(
+            self.get_parameter('hold_gap_deadband_m').value
+        )
+        self.hold_heading_deadband_rad = float(
+            self.get_parameter('hold_heading_deadband_rad').value
+        )
 
-        self.line_hold_enabled = bool(self.get_parameter('line_hold_enabled').value)
-        self.line_hold_gain = float(self.get_parameter('line_hold_gain').value)
-        self.line_hold_integral_gain = float(self.get_parameter('line_hold_integral_gain').value)
-        self.line_hold_integral_limit = float(self.get_parameter('line_hold_integral_limit').value)
-        self.line_hold_start_delay_sec = float(self.get_parameter('line_hold_start_delay_sec').value)
-        self.line_hold_max_correction_rad = float(self.get_parameter('line_hold_max_correction_rad').value)
+        self.speed_match_enabled = bool(
+            self.get_parameter('speed_match_enabled').value
+        )
+        self.speed_match_gain = float(self.get_parameter('speed_match_gain').value)
+        self.min_creep_speed = float(self.get_parameter('min_creep_speed').value)
+        self.command_smoothing_alpha_linear = float(
+            self.get_parameter('command_smoothing_alpha_linear').value
+        )
+        self.command_smoothing_alpha_angular = float(
+            self.get_parameter('command_smoothing_alpha_angular').value
+        )
 
-        self.resync_enabled = bool(self.get_parameter('resync_enabled').value)
-        self.resync_lateral_error_m = float(self.get_parameter('resync_lateral_error_m').value)
-        self.resync_release_error_m = float(self.get_parameter('resync_release_error_m').value)
-        self.resync_angular_boost = float(self.get_parameter('resync_angular_boost').value)
-        self.resync_speed_scale = float(self.get_parameter('resync_speed_scale').value)
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
 
     def _init_state(self):
         self.world_x = 0.0
@@ -128,11 +175,8 @@ class PathFollower(Node):
         self.yaw = 0.0
         self.have_self_state = False
 
-        self.path: Optional[Path] = None
-        self._path_cache = None
-
         self.formation_done = False
-        self.path_follow_start_time_ns = None
+        self.startup_released = False
 
         self.current_role = 'follower'
         self.current_leader_id = ''
@@ -142,19 +186,24 @@ class PathFollower(Node):
         self.locked_order: List[str] = []
         self.last_logged_order: List[str] = []
 
-        self.line_hold_integral = 0.0
-        self.resync_active = False
+        self.last_chain_publish_ns = 0
+
+        self.last_linear_cmd = 0.0
+        self.last_angular_cmd = 0.0
 
     def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.chain_order_pub = self.create_publisher(String, '/swarm/chain_order', 10)
 
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
-        self.create_subscription(Path, self.path_topic, self.path_callback, 10)
         self.create_subscription(RobotState, '/swarm/robot_states', self.state_callback, 10)
         self.create_subscription(Bool, 'formation_ready', self.formation_ready_cb, 10)
 
         self.create_timer(0.1, self.control_loop)
+
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
 
     def odom_callback(self, msg: Odometry):
         # Fallback only, before /swarm/robot_states for this robot arrives.
@@ -164,10 +213,6 @@ class PathFollower(Node):
         self.world_x = self.spawn_x + msg.pose.pose.position.x
         self.world_y = self.spawn_y + msg.pose.pose.position.y
         self.yaw = quaternion_to_yaw(msg.pose.pose.orientation)
-
-    def path_callback(self, msg: Path):
-        self.path = msg
-        self._path_cache = None
 
     def state_callback(self, msg: RobotState):
         self.other_robots[msg.robot_name] = msg
@@ -187,35 +232,93 @@ class PathFollower(Node):
         self.is_leader = msg.role == 'leader' and msg.leader_id == self.robot_name
 
         if old_leader and self.current_leader_id != old_leader:
-            self.locked_order = []
-            self.last_logged_order = []
-            self.formation_done = False
-            self.path_follow_start_time_ns = None
-            self.line_hold_integral = 0.0
-            self.resync_active = False
-            self.get_logger().info(
-                f'[{self.robot_name}] leader changed: {old_leader} -> {self.current_leader_id}'
-            )
+            self._reset_for_new_leader(old_leader, self.current_leader_id)
 
     def formation_ready_cb(self, msg: Bool):
-        if msg.data and not self.formation_done:
-            order = self.compute_physical_chain_order()
+        if not msg.data:
+            self.formation_done = False
+            self.startup_released = False
+            return
 
-            if self.lock_chain_order and self.robot_name in order:
-                self.locked_order = order
-                self._log_order(order, locked=True)
-                self._publish_chain_order(order)
+        if self.formation_done:
+            return
 
-            self.formation_done = True
-            self.path_follow_start_time_ns = self.get_clock().now().nanoseconds
-            self.line_hold_integral = 0.0
-            self.resync_active = False
-            self.get_logger().info(f'[{self.robot_name}] path following active')
+        order = self.compute_physical_chain_order()
 
-    def _publish_chain_order(self, order: List[str]):
-        msg = String()
-        msg.data = json.dumps(order)
-        self.chain_order_pub.publish(msg)
+        if self.lock_chain_order and self.robot_name in order:
+            self.locked_order = order
+            self._log_order(order, locked=True)
+            self._publish_chain_order(order)
+
+        self.formation_done = True
+        self.startup_released = False
+        self.get_logger().info(f'[{self.robot_name}] chain following active')
+
+    def _reset_for_new_leader(self, old_leader: str, new_leader: str):
+        self.locked_order = []
+        self.last_logged_order = []
+        self.formation_done = False
+        self.startup_released = False
+        self.get_logger().info(
+            f'[{self.robot_name}] leader changed: {old_leader} -> {new_leader}'
+        )
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
+    def control_loop(self):
+        if not self.have_self_state:
+            self.publish_cmd(0.0, 0.0)
+            return
+
+        if not self.formation_done:
+            return
+
+        if self.is_leader or self.current_role != 'follower' or not self.current_leader_id:
+            return
+
+        order = self.get_chain_order()
+
+        if self.robot_name not in order:
+            self.publish_cmd(0.0, 0.0)
+            return
+
+        self._publish_chain_order_periodically(order)
+
+        predecessor = self.get_predecessor()
+
+        if predecessor is None:
+            self.publish_cmd(0.0, 0.0)
+            return
+
+        if not self.startup_space_available(predecessor):
+            self.publish_cmd(0.0, 0.0)
+            return
+
+        guard = self.predecessor_guard(predecessor)
+        if guard is not None:
+            self.publish_cmd(*guard)
+            return
+
+        target = self.get_predecessor_target(predecessor)
+
+        if target is None:
+            linear, angular = self.compute_spacing_hold_command(predecessor)
+        else:
+            tx, ty, distance_to_predecessor = target
+            linear, angular = self.compute_control(tx, ty)
+            linear = self.apply_gap_speed_control(linear, distance_to_predecessor, predecessor)
+        linear *= self.robot_collision_scale(predecessor)
+
+        linear = max(self.too_close_reverse_speed, min(self.max_linear_speed, linear))
+        angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+
+        self.publish_cmd(linear, angular)
+
+    # ------------------------------------------------------------------
+    # Chain order
+    # ------------------------------------------------------------------
 
     def get_chain_order(self) -> List[str]:
         if self.lock_chain_order and self.locked_order:
@@ -247,6 +350,8 @@ class PathFollower(Node):
         if not robots:
             return []
 
+        # Sort robots along the current leader heading.
+        # Robots in front of the leader heading axis come first.
         fx = math.cos(leader.yaw)
         fy = math.sin(leader.yaw)
 
@@ -261,23 +366,10 @@ class PathFollower(Node):
         if leader_name in names:
             names.remove(leader_name)
 
+        # Stable fallback by robot number when robots start very close together.
+        names = sorted(names, key=self.robot_number)
+
         return [leader_name] + names
-
-    def _log_order(self, order: List[str], locked: bool):
-        if order == self.last_logged_order:
-            return
-
-        self.last_logged_order = list(order)
-        label = 'locked chain order' if locked else 'chain order'
-        # self.get_logger().info(f'[{self.robot_name}] {label}: {" -> ".join(order)}')
-
-    def get_my_index(self) -> Optional[int]:
-        order = self.get_chain_order()
-
-        if self.robot_name not in order:
-            return None
-
-        return order.index(self.robot_name)
 
     def get_predecessor(self) -> Optional[RobotState]:
         order = self.get_chain_order()
@@ -298,156 +390,100 @@ class PathFollower(Node):
 
         return predecessor
 
-    def _get_path_lengths(self):
-        if self.path is None or len(self.path.poses) < 2:
-            return None, None
+    def _publish_chain_order(self, order: List[str]):
+        msg = String()
+        msg.data = json.dumps(order)
+        self.chain_order_pub.publish(msg)
+        self.last_chain_publish_ns = self.get_clock().now().nanoseconds
 
-        path_id = id(self.path)
+    def _publish_chain_order_periodically(self, order: List[str]):
+        now_ns = self.get_clock().now().nanoseconds
 
-        if self._path_cache is not None and self._path_cache[0] == path_id:
-            _, total, cumulative = self._path_cache
-            return total, cumulative
+        if now_ns - self.last_chain_publish_ns < 500_000_000:
+            return
 
-        cumulative = [0.0]
-        total = 0.0
+        self._publish_chain_order(order)
 
-        for i in range(1, len(self.path.poses)):
-            p0 = self.path.poses[i - 1].pose.position
-            p1 = self.path.poses[i].pose.position
-            seg = math.hypot(p1.x - p0.x, p1.y - p0.y)
-            total += seg
-            cumulative.append(total)
+    def _log_order(self, order: List[str], locked: bool):
+        if order == self.last_logged_order:
+            return
 
-        self._path_cache = (path_id, total, cumulative)
-        return total, cumulative
+        self.last_logged_order = list(order)
+        label = 'locked chain order' if locked else 'chain order'
+        self.get_logger().info(f'[{self.robot_name}] {label}: {" -> ".join(order)}')
 
-    def closest_path_s(self, cumulative: List[float], x: float, y: float) -> float:
-        best_dist_sq = float('inf')
-        best_s = 0.0
+    def robot_number(self, name: str) -> int:
+        match = re.search(r'\d+', name)
+        return int(match.group()) if match else 999
 
-        for i in range(1, len(self.path.poses)):
-            p0 = self.path.poses[i - 1].pose.position
-            p1 = self.path.poses[i].pose.position
+    # ------------------------------------------------------------------
+    # Startup release
+    # ------------------------------------------------------------------
 
-            vx = p1.x - p0.x
-            vy = p1.y - p0.y
-            wx = x - p0.x
-            wy = y - p0.y
+    def startup_space_available(self, predecessor: RobotState) -> bool:
+        """
+        Followers start once the predecessor opened enough space.
 
-            seg_len_sq = vx * vx + vy * vy
+        This is intentionally less strict than the old 0.95 ratio.
+        A lower ratio makes line formation much faster.
+        """
+        if self.startup_released:
+            return True
 
-            if seg_len_sq <= 1e-9:
-                t = 0.0
-            else:
-                t = (wx * vx + wy * vy) / seg_len_sq
-                t = max(0.0, min(1.0, t))
-
-            px = p0.x + t * vx
-            py = p0.y + t * vy
-            dist_sq = (x - px) ** 2 + (y - py) ** 2
-
-            if dist_sq < best_dist_sq:
-                best_dist_sq = dist_sq
-                best_s = cumulative[i - 1] + t * math.sqrt(seg_len_sq)
-
-        return best_s
-
-    def sample_path(self, cumulative: List[float], total: float, s: float):
-        s = max(0.0, min(total, s))
-
-        if s <= 0.0:
-            p = self.path.poses[0].pose.position
-            return p.x, p.y
-
-        if s >= total:
-            p = self.path.poses[-1].pose.position
-            return p.x, p.y
-
-        for i in range(1, len(cumulative)):
-            if cumulative[i] >= s:
-                p0 = self.path.poses[i - 1].pose.position
-                p1 = self.path.poses[i].pose.position
-
-                s0 = cumulative[i - 1]
-                s1 = cumulative[i]
-                ratio = 0.0 if s1 <= s0 else (s - s0) / (s1 - s0)
-
-                return (
-                    p0.x + ratio * (p1.x - p0.x),
-                    p0.y + ratio * (p1.y - p0.y),
-                )
-
-        p = self.path.poses[-1].pose.position
-        return p.x, p.y
-
-    def sample_path_yaw(self, cumulative: List[float], total: float, s: float) -> float:
-        s1 = max(0.0, s - 0.15)
-        s2 = min(total, s + 0.15)
-
-        p1 = self.sample_path(cumulative, total, s1)
-        p2 = self.sample_path(cumulative, total, s2)
-
-        dx = p2[0] - p1[0]
-        dy = p2[1] - p1[1]
-
-        if math.hypot(dx, dy) < 0.01:
-            return self.yaw
-
-        return math.atan2(dy, dx)
-
-    def compute_lateral_error_to_path(self, cumulative: List[float], total: float, s_self: float):
-        cx, cy = self.sample_path(cumulative, total, s_self)
-        path_yaw = self.sample_path_yaw(cumulative, total, s_self)
-
-        nx = -math.sin(path_yaw)
-        ny = math.cos(path_yaw)
-
-        lateral_error = (self.world_x - cx) * nx + (self.world_y - cy) * ny
-
-        return lateral_error, path_yaw
-
-    def get_arc_length_target(self, predecessor: RobotState):
-        total, cumulative = self._get_path_lengths()
-
-        if total is None or total < self.min_path_length_m:
-            return None
-
-        # Corrected: predecessor-based arc length.
-        # This keeps the visible chain together instead of each robot independently
-        # chasing a delayed leader-path slot.
-        s_pred = self.closest_path_s(cumulative, predecessor.x, predecessor.y)
-        s_target = s_pred - self.desired_follow_distance_m
-
-        if s_target < 0.0:
-            return None
-
-        s_self = self.closest_path_s(cumulative, self.world_x, self.world_y)
-
-        lateral_error, path_yaw_at_self = self.compute_lateral_error_to_path(
-            cumulative,
-            total,
-            s_self,
+        gap = math.hypot(
+            predecessor.x - self.world_x,
+            predecessor.y - self.world_y,
         )
 
-        s_lookahead = max(0.0, min(total, s_target + self.lookahead_m))
+        required_gap = self.desired_follow_distance_m * self.startup_gap_ratio
 
-        tx, ty = self.sample_path(cumulative, total, s_lookahead)
-        path_yaw = self.sample_path_yaw(cumulative, total, s_lookahead)
+        if gap >= required_gap:
+            self.startup_released = True
+            self.get_logger().info(
+                f'[{self.robot_name}] startup released: '
+                f'gap={gap:.2f}m required={required_gap:.2f}m'
+            )
+            return True
 
-        arc_gap = s_target - s_self
+        return False
 
-        return (
-            tx,
-            ty,
-            path_yaw,
-            arc_gap,
-            s_pred,
-            s_target,
-            lateral_error,
-            path_yaw_at_self,
-        )
+    # ------------------------------------------------------------------
+    # Target generation
+    # ------------------------------------------------------------------
 
-    def get_predecessor_target(self, predecessor: RobotState):
+    def should_hold_position(self, predecessor: RobotState) -> bool:
+        """
+        If spacing is already good and the predecessor is slow/stopped,
+        do not keep rotating to perfectly aim at the target point.
+
+        This prevents follower wiggle during launch, waiting, and obstacle slowdown.
+        """
+        dx = predecessor.x - self.world_x
+        dy = predecessor.y - self.world_y
+        distance = math.hypot(dx, dy)
+
+        gap_error = distance - self.desired_follow_distance_m
+
+        if abs(gap_error) > self.hold_gap_deadband_m:
+            return False
+
+        predecessor_speed = abs(predecessor.linear_speed)
+
+        if predecessor_speed > 0.03:
+            return False
+
+        angle_to_predecessor = math.atan2(dy, dx)
+        heading_error = normalize_angle(angle_to_predecessor - self.yaw)
+
+        if abs(heading_error) > self.hold_heading_deadband_rad:
+            return False
+
+        return True
+
+    def get_predecessor_target(
+        self,
+        predecessor: RobotState,
+    ) -> Optional[Tuple[float, float, float]]:
         dx = predecessor.x - self.world_x
         dy = predecessor.y - self.world_y
         distance = math.hypot(dx, dy)
@@ -457,255 +493,138 @@ class PathFollower(Node):
         if distance < min_distance:
             return None
 
-        angle = math.atan2(dy, dx)
+        # Do not use a hard upper deadband here.
+        # A hard "return None" near the target creates start/stop motion when
+        # the predecessor is moving slowly. Smooth hold/speed matching is handled
+        # in compute_spacing_hold_command() and apply_gap_speed_control().
+        angle_to_predecessor = math.atan2(dy, dx)
 
-        tx = predecessor.x - self.desired_follow_distance_m * math.cos(angle)
-        ty = predecessor.y - self.desired_follow_distance_m * math.sin(angle)
-
-        return (
-            tx,
-            ty,
-            angle,
-            distance - self.desired_follow_distance_m,
-            None,
-            None,
-            0.0,
-            angle,
+        tx = predecessor.x - self.desired_follow_distance_m * math.cos(
+            angle_to_predecessor
+        )
+        ty = predecessor.y - self.desired_follow_distance_m * math.sin(
+            angle_to_predecessor
         )
 
-    def control_loop(self):
-        if not self.formation_done:
-            return
+        return tx, ty, distance
 
-        if self.is_leader or self.current_role != 'follower' or not self.current_leader_id:
-            return
+    # ------------------------------------------------------------------
+    # Control
+    # ------------------------------------------------------------------
 
-        if not self.startup_delay_done():
-            self.publish_cmd(0.0, 0.0)
-            return
-
-        order = self.get_chain_order()
-
-        if self.robot_name not in order:
-            self.publish_cmd(0.0, 0.0)
-            return
-
-        index = order.index(self.robot_name)
-
-        if index == 0:
-            return
-
-        predecessor = self.get_predecessor()
-
-        guard = self.predecessor_guard(predecessor)
-
-        if guard is not None:
-            self.publish_cmd(*guard)
-            return
-
-        result = None
-
-        if predecessor is not None:
-            result = self.get_arc_length_target(predecessor)
-
-        if result is None and self.fallback_to_predecessor and predecessor is not None:
-            result = self.get_predecessor_target(predecessor)
-
-        if result is None:
-            self.publish_cmd(0.0, 0.0)
-            return
-
-        (
-            tx,
-            ty,
-            path_yaw,
-            arc_gap,
-            s_pred,
-            s_target,
-            lateral_error,
-            path_yaw_at_self,
-        ) = result
-
-        linear, angular = self.compute_control(tx, ty, path_yaw, lateral_error)
-
-        angular = self.apply_line_hold_correction(
-            angular,
-            lateral_error,
-            path_yaw_at_self,
-        )
-
-        linear, angular = self.apply_resync_correction(
-            linear,
-            angular,
-            lateral_error,
-        )
-
-        linear = self.apply_arc_gap_speed_control(linear, arc_gap, predecessor)
-        linear *= self.robot_collision_scale(predecessor)
-
-        linear = max(self.too_close_reverse_speed, min(self.max_linear_speed, linear))
-        angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
-
-        self.publish_cmd(linear, angular)
-
-    def startup_delay_done(self) -> bool:
-        if self.startup_delay_per_slot_sec <= 0.0:
-            return True
-
-        if self.path_follow_start_time_ns is None:
-            return False
-
-        index = self.get_my_index()
-
-        if index is None:
-            return False
-
-        follower_index = max(0, index - 1)
-        required_delay = follower_index * self.startup_delay_per_slot_sec
-
-        elapsed = (self.get_clock().now().nanoseconds - self.path_follow_start_time_ns) / 1e9
-
-        return elapsed >= required_delay
-
-    def compute_control(self, tx: float, ty: float, path_yaw: float, lateral_error: float):
+    def compute_control(self, tx: float, ty: float) -> Tuple[float, float]:
         dx = tx - self.world_x
         dy = ty - self.world_y
-        distance = math.hypot(dx, dy)
+        distance_to_target = math.hypot(dx, dy)
 
-        if distance < self.goal_tolerance_m:
-            return 0.0, 0.0
-
-        pursuit_heading = math.atan2(dy, dx)
-
-        correction = math.atan2(
-            self.cross_track_gain * lateral_error,
-            max(self.lookahead_m, 0.05),
-        )
-
-        correction = max(
-            -self.max_cross_track_correction_rad,
-            min(self.max_cross_track_correction_rad, correction),
-        )
-
-        corrected_path_heading = normalize_angle(path_yaw - correction)
-
-        x = 0.45 * math.cos(pursuit_heading) + 0.55 * math.cos(corrected_path_heading)
-        y = 0.45 * math.sin(pursuit_heading) + 0.55 * math.sin(corrected_path_heading)
-
-        desired_heading = math.atan2(y, x)
+        desired_heading = math.atan2(dy, dx)
         heading_error = normalize_angle(desired_heading - self.yaw)
 
-        linear = min(self.linear_gain * distance, self.max_linear_speed)
+        linear = min(self.linear_gain * distance_to_target, self.max_linear_speed)
 
+        # Less conservative than the old version, so robots keep moving while
+        # turning into formation.
         abs_err = abs(heading_error)
 
         if abs_err > 1.30:
-            linear *= 0.20
+            linear *= 0.35
         elif abs_err > 0.85:
-            linear *= 0.45
+            linear *= 0.60
         elif abs_err > 0.50:
-            linear *= 0.70
+            linear *= 0.85
+
+        # If almost at target, stop instead of jittering.
+        if distance_to_target < 0.04:
+            linear = 0.0
 
         angular = self.angular_gain * heading_error
 
         return linear, angular
 
-    def apply_line_hold_correction(self, angular: float, lateral_error: float, path_yaw: float):
-        if not self.line_hold_enabled:
-            return angular
+    def compute_spacing_hold_command(
+        self,
+        predecessor: RobotState,
+    ) -> Tuple[float, float]:
+        """
+        Smooth command for the spacing band.
 
-        if self.path_follow_start_time_ns is None:
-            return angular
+        Old behavior published exactly zero when the follower was close to the
+        desired distance. That caused stop/go motion when the leader crawled
+        around obstacles. This method lets the follower creep at approximately
+        the predecessor speed instead of repeatedly stopping and restarting.
+        """
+        dx = predecessor.x - self.world_x
+        dy = predecessor.y - self.world_y
+        distance = math.hypot(dx, dy)
+        gap_error = distance - self.desired_follow_distance_m
 
-        elapsed = (self.get_clock().now().nanoseconds - self.path_follow_start_time_ns) / 1e9
+        predecessor_speed = max(0.0, float(predecessor.linear_speed))
 
-        if elapsed < self.line_hold_start_delay_sec:
-            return angular
+        # If predecessor is basically stopped and spacing is good, hold still.
+        if abs(gap_error) <= self.hold_gap_deadband_m and predecessor_speed < 0.025:
+            return 0.0, 0.0
 
-        self.line_hold_integral += lateral_error * 0.1
-        self.line_hold_integral = max(
-            -self.line_hold_integral_limit,
-            min(self.line_hold_integral_limit, self.line_hold_integral),
-        )
+        # If predecessor is moving slowly, match it instead of pulsing.
+        if self.speed_match_enabled and gap_error >= -self.follow_deadband_m:
+            matched = predecessor_speed * self.speed_match_gain
 
-        correction = (
-            self.line_hold_gain * lateral_error
-            + self.line_hold_integral_gain * self.line_hold_integral
-        )
+            if predecessor_speed > 0.025:
+                matched = max(self.min_creep_speed, matched)
 
-        correction = max(
-            -self.line_hold_max_correction_rad,
-            min(self.line_hold_max_correction_rad, correction),
-        )
+            linear = min(self.max_linear_speed, matched)
+        else:
+            linear = 0.0
 
-        return angular - correction
+        # Only rotate if we are badly misaligned. Small angular corrections while
+        # waiting are the source of visible wiggle.
+        angle_to_predecessor = math.atan2(dy, dx)
+        heading_error = normalize_angle(angle_to_predecessor - self.yaw)
 
-    def apply_resync_correction(self, linear: float, angular: float, lateral_error: float):
-        if not self.resync_enabled:
-            return linear, angular
-
-        abs_error = abs(lateral_error)
-
-        if not self.resync_active and abs_error >= self.resync_lateral_error_m:
-            self.resync_active = True
-            self.get_logger().warn(
-                f'[{self.robot_name}] resync active: lateral_error={lateral_error:.2f}m'
-            )
-
-        if self.resync_active and abs_error <= self.resync_release_error_m:
-            self.resync_active = False
-            self.get_logger().info(f'[{self.robot_name}] resync released')
-
-        if not self.resync_active:
-            return linear, angular
-
-        linear *= self.resync_speed_scale
-        angular *= self.resync_angular_boost
+        if abs(heading_error) < self.hold_heading_deadband_rad:
+            angular = 0.0
+        else:
+            angular = 0.45 * self.angular_gain * heading_error
 
         return linear, angular
 
-    def apply_arc_gap_speed_control(
+    def apply_gap_speed_control(
         self,
         linear: float,
-        arc_gap: float,
-        predecessor: Optional[RobotState],
+        distance_to_predecessor: float,
+        predecessor: RobotState,
     ) -> float:
-        if predecessor is not None:
-            euclid_gap = math.hypot(
-                predecessor.x - self.world_x,
-                predecessor.y - self.world_y,
-            )
+        gap_error = distance_to_predecessor - self.desired_follow_distance_m
+        predecessor_speed = max(0.0, float(predecessor.linear_speed))
 
-            target_gap = self.desired_follow_distance_m
-            gap_error = euclid_gap - target_gap
+        # Too close: stop moving forward.
+        if gap_error < -self.follow_deadband_m:
+            return 0.0
 
-            if gap_error < -self.follow_deadband_m:
-                return max(0.0, min(linear, self.max_linear_speed * 0.20))
+        # Slightly close: move no faster than predecessor, so we do not close the
+        # gap and then stop again.
+        if gap_error < 0.0:
+            if self.speed_match_enabled and predecessor_speed > 0.025:
+                return min(linear, max(self.min_creep_speed, predecessor_speed * 0.85))
+            return min(linear, self.max_linear_speed * 0.25)
 
-            if gap_error < 0.0:
-                return max(0.0, min(linear, self.max_linear_speed * 0.40))
+        # Inside the good spacing band: speed match instead of hard stop/start.
+        if gap_error < self.follow_deadband_m:
+            if self.speed_match_enabled and predecessor_speed > 0.025:
+                return min(
+                    self.max_linear_speed * 0.70,
+                    max(self.min_creep_speed, predecessor_speed * self.speed_match_gain),
+                )
 
-        if arc_gap is None:
-            return linear
+            return min(linear, self.max_linear_speed * 0.35)
 
-        deadband = self.follow_deadband_m
-
-        if arc_gap < -deadband:
-            return max(0.0, min(linear, self.max_linear_speed * 0.25))
-
-        if arc_gap < deadband:
-            return max(
-                self.min_linear_speed_when_far,
-                min(linear, self.max_linear_speed * 0.65),
-            )
-
-        if arc_gap > self.very_far_gap_m:
+        # Far away: maintain at least a useful catch-up speed.
+        if distance_to_predecessor > self.very_far_gap_m:
             return min(
                 self.max_linear_speed,
                 max(linear, self.min_linear_speed_when_far) * self.catchup_speed_boost,
             )
 
-        if arc_gap > self.far_gap_m:
+        if distance_to_predecessor > self.far_gap_m:
             return min(
                 self.max_linear_speed,
                 max(linear, self.min_linear_speed_when_far),
@@ -713,7 +632,14 @@ class PathFollower(Node):
 
         return linear
 
-    def predecessor_guard(self, predecessor: Optional[RobotState]):
+    # ------------------------------------------------------------------
+    # Safety around other robots
+    # ------------------------------------------------------------------
+
+    def predecessor_guard(
+        self,
+        predecessor: Optional[RobotState],
+    ) -> Optional[Tuple[float, float]]:
         if predecessor is None:
             return None
 
@@ -760,10 +686,35 @@ class PathFollower(Node):
 
         return 1.0
 
+    # ------------------------------------------------------------------
+    # Publishing
+    # ------------------------------------------------------------------
+
+    def smooth_value(self, old: float, new: float, alpha: float) -> float:
+        alpha = max(0.0, min(1.0, alpha))
+        return (alpha * new) + ((1.0 - alpha) * old)
+
     def publish_cmd(self, linear: float, angular: float):
+        self.last_linear_cmd = self.smooth_value(
+            self.last_linear_cmd,
+            linear,
+            self.command_smoothing_alpha_linear,
+        )
+        self.last_angular_cmd = self.smooth_value(
+            self.last_angular_cmd,
+            angular,
+            self.command_smoothing_alpha_angular,
+        )
+
+        # Avoid tiny residual commands after smoothing.
+        if abs(linear) < 1e-4 and abs(self.last_linear_cmd) < 0.01:
+            self.last_linear_cmd = 0.0
+        if abs(angular) < 1e-4 and abs(self.last_angular_cmd) < 0.03:
+            self.last_angular_cmd = 0.0
+
         msg = Twist()
-        msg.linear.x = linear
-        msg.angular.z = angular
+        msg.linear.x = self.last_linear_cmd
+        msg.angular.z = self.last_angular_cmd
         self.cmd_pub.publish(msg)
 
 
@@ -776,7 +727,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.publish_cmd(0.0, 0.0)
+        msg = Twist()
+        node.cmd_pub.publish(msg)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

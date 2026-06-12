@@ -144,7 +144,12 @@ class TreeExplorer(Node):
         self.last_chain_status_log_ns = 0
         self.locked_chain_order = []
 
-        self.escape_mode = False
+        # Leader exploration state machine.
+        # CRUISE: follow preferred heading.
+        # AVOID_OBSTACLE: keep one selected avoidance direction until clear.
+        # REJOIN_HEADING: return to preferred heading only after obstacle is passed.
+        self.mode = 'CRUISE'
+        self.avoid_turn_sign = 0.0
         self.escape_start_ns = 0
 
     def _init_ros_interfaces(self):
@@ -250,60 +255,135 @@ class TreeExplorer(Node):
         return elapsed >= self.leader_start_delay_sec
 
     def _compute_exploration_command(self):
-        heading_error = normalize_angle(self.preferred_heading - self.yaw)
+        """
+        Main leader behavior.
 
+        The important design rule is that tree_explorer owns normal obstacle
+        avoidance. The safety filter should only be the emergency layer after
+        this command is published.
+        """
+        if not self.obstacle_escape_enabled:
+            return self._cruise_command()
+
+        # Any new front blockage immediately enters/continues avoidance.
         if self.front < self.front_blocked_distance:
-            if self.obstacle_escape_enabled:
-                self.escape_mode = True
-                self.escape_start_ns = self.get_clock().now().nanoseconds
+            if self.mode != 'AVOID_OBSTACLE':
+                self._enter_avoid_mode()
+            return self._avoid_obstacle_command()
 
-            return self._turn_toward_open_space()
+        if self.mode == 'AVOID_OBSTACLE':
+            return self._avoid_obstacle_command()
 
-        if self.obstacle_escape_enabled and self.escape_mode:
-            elapsed = (
-                self.get_clock().now().nanoseconds - self.escape_start_ns
-            ) / 1e9
+        if self.mode == 'REJOIN_HEADING':
+            return self._rejoin_heading_command()
 
-            heading_error_ok = abs(heading_error) < math.radians(
-                self.escape_rejoin_heading_error_deg
-            )
-            front_clear = self.front > self.escape_front_clear_distance
+        return self._cruise_command()
 
-            if elapsed >= self.escape_min_time_sec and front_clear and heading_error_ok:
-                self.escape_mode = False
-            else:
-                linear = min(self.forward_speed, 0.045)
-
-                if self.left < self.side_clearance_distance:
-                    return linear, -self.side_avoid_turn_gain
-
-                if self.right < self.side_clearance_distance:
-                    return linear, self.side_avoid_turn_gain
-
-                angular = self.heading_gain * heading_error
-                angular = max(-self.max_heading_turn, min(self.max_heading_turn, angular))
-                return linear, angular
+    def _cruise_command(self):
+        """Drive along the preferred exploration heading."""
+        heading_error = normalize_angle(self.preferred_heading - self.yaw)
 
         angular = self.heading_gain * heading_error
         angular = max(-self.max_heading_turn, min(self.max_heading_turn, angular))
 
         linear = self.forward_speed
 
+        # Side clearances are only gentle nudges in cruise mode.
         if self.left < self.side_clearance_distance:
-            linear = min(linear, 0.045)
+            linear = min(linear, 0.07)
             angular -= self.side_avoid_turn_gain
 
         if self.right < self.side_clearance_distance:
-            linear = min(linear, 0.045)
+            linear = min(linear, 0.07)
             angular += self.side_avoid_turn_gain
 
         return linear, angular
 
-    def _turn_toward_open_space(self):
-        if self.front_left >= self.front_right:
-            return 0.02, self.turn_speed
+    def _enter_avoid_mode(self):
+        """
+        Lock one avoidance direction.
 
-        return 0.02, -self.turn_speed
+        This prevents left/right oscillation when front_left and front_right
+        alternate by small amounts from scan noise or partial obstacle views.
+        """
+        self.mode = 'AVOID_OBSTACLE'
+        self.escape_start_ns = self.get_clock().now().nanoseconds
+
+        if self.front_left >= self.front_right:
+            self.avoid_turn_sign = 1.0   # turn left
+        else:
+            self.avoid_turn_sign = -1.0  # turn right
+
+        self.get_logger().info(
+            f'[{self.robot_name}] obstacle avoidance started; '
+            f'turn_sign={self.avoid_turn_sign:+.0f}'
+        )
+
+    def _avoid_obstacle_command(self):
+        """
+        Persistent obstacle escape behavior.
+
+        While avoiding, do not try to rejoin the preferred heading. That was
+        the source of the old fight: cruise wanted the preferred heading while
+        safety/avoidance wanted to turn away.
+        """
+        elapsed = (
+            self.get_clock().now().nanoseconds - self.escape_start_ns
+        ) / 1e9
+
+        # Still blocked in front: keep turning in the chosen direction.
+        if self.front < self.front_blocked_distance:
+            return 0.015, self.avoid_turn_sign * self.turn_speed
+
+        # If we turn left, the obstacle is normally on the right.
+        # If we turn right, the obstacle is normally on the left.
+        obstacle_side_distance = (
+            self.right if self.avoid_turn_sign > 0.0 else self.left
+        )
+
+        # Only leave avoidance after the robot has moved past the obstacle,
+        # not merely after the front sector flickers clear for one cycle.
+        obstacle_side_clear = (
+            obstacle_side_distance > self.side_clearance_distance + 0.30
+        )
+        front_clear = self.front > self.escape_front_clear_distance
+
+        if elapsed >= self.escape_min_time_sec and front_clear and obstacle_side_clear:
+            self.mode = 'REJOIN_HEADING'
+            return self._rejoin_heading_command()
+
+        linear = min(self.forward_speed, 0.07)
+
+        if obstacle_side_distance < self.side_clearance_distance:
+            # Too close to the obstacle side: steer away.
+            angular = self.avoid_turn_sign * self.side_avoid_turn_gain
+
+        elif obstacle_side_distance > self.side_clearance_distance + 0.40:
+            # Getting far enough around the obstacle: gently curve back around it.
+            angular = -self.avoid_turn_sign * 0.18
+
+        else:
+            # Good clearance: continue forward around the obstacle.
+            angular = 0.0
+
+        return linear, angular
+
+    def _rejoin_heading_command(self):
+        """Return to preferred heading after obstacle escape is complete."""
+        if self.front < self.front_blocked_distance:
+            self._enter_avoid_mode()
+            return self._avoid_obstacle_command()
+
+        heading_error = normalize_angle(self.preferred_heading - self.yaw)
+
+        if abs(heading_error) < math.radians(self.escape_rejoin_heading_error_deg):
+            self.mode = 'CRUISE'
+
+        angular = self.heading_gain * heading_error
+        angular = max(-self.max_heading_turn, min(self.max_heading_turn, angular))
+
+        linear = min(self.forward_speed, 0.075)
+        return linear, angular
 
     def _chain_speed_scale(self):
         order = self._get_chain_order()
@@ -349,7 +429,7 @@ class TreeExplorer(Node):
 
         order = [self.robot_name] + ordered
 
-        if len(order) >= 4:
+        if len(order) >= len(self.other_robots):
             self.locked_chain_order = order
             self.get_logger().info(
                 f'[{self.robot_name}] locked leader chain: {" -> ".join(order)}'

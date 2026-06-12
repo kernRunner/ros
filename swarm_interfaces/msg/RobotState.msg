@@ -11,3 +11,14 @@ float64 leader_score
 string role
 string leader_id
 bool active
+
+# Relay-tree exploration fields
+string group_id
+string parent_group_id
+string parent_relay_id
+
+float64 assigned_heading_deg
+int32 branch_depth
+
+bool is_relay
+bool is_group_leader

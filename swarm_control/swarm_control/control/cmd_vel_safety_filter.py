@@ -225,37 +225,34 @@ class CmdVelSafetyFilter(Node):
         side_bias = self.front_left - self.front_right
 
         if self.is_leader:
-            # Leader has no path follower, so it must actively avoid obstacles.
+            # Emergency safety only.
+            # tree_explorer owns normal leader obstacle avoidance and heading.
+            # This layer may reduce speed or stop, but it should not fight the
+            # planner's angular command except as a last resort.
             if self.front < self.hard_stop_distance:
                 linear = 0.0
-                angular = 0.55 if side_bias >= 0.0 else -0.55
+
+                # Only choose an emergency turn if tree_explorer did not already
+                # command a meaningful turn direction.
+                if abs(angular) < 0.05:
+                    angular = 0.45 if side_bias >= 0.0 else -0.45
 
             elif self.front < self.slowdown_distance:
                 linear = min(linear, 0.045)
-                angular += 0.15 if side_bias >= 0.0 else -0.15
 
-            # Leader side avoidance can be stronger.
+            # Side obstacles reduce speed only. Do not overwrite angular here;
+            # tree_explorer's state machine owns wall/obstacle steering.
             if self.left < self.side_stop_distance:
                 linear = min(linear, 0.025)
-                angular = min(angular, -0.65)
 
             elif self.left < self.side_slow_distance:
                 linear = min(linear, 0.040)
-                angular -= 0.25
 
             if self.right < self.side_stop_distance:
                 linear = min(linear, 0.025)
-                angular = max(angular, 0.65)
 
             elif self.right < self.side_slow_distance:
                 linear = min(linear, 0.040)
-                angular += 0.25
-
-            if self.left < self.side_slow_distance or self.right < self.side_slow_distance:
-                wall_error = self.left - self.right
-                if abs(wall_error) < 10.0:
-                    angular -= self.wall_avoid_gain * wall_error
-                    linear = min(linear, 0.055)
 
         else:
             # Followers: path_follower owns the desired heading.

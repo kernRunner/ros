@@ -15,14 +15,15 @@ def generate_launch_description():
     model_file = os.path.join(gazebo_pkg, 'models', 'swarm_bot.sdf')
 
     robots = [
-        {'name': 'robot1', 'x': '1.2', 'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot2', 'x': '1.2', 'y': '-0.6', 'z': '0.0'},
-        {'name': 'robot3', 'x': '0.0', 'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot4', 'x': '0.0', 'y': '-0.6', 'z': '0.0'},
+        {'name': 'robot1', 'x': '1.2',  'y':  '0.6', 'z': '0.0'},
+        {'name': 'robot2', 'x': '1.2',  'y': '-0.6', 'z': '0.0'},
+        {'name': 'robot3', 'x': '0.0',  'y':  '0.6', 'z': '0.0'},
+        {'name': 'robot4', 'x': '0.0',  'y': '-0.6', 'z': '0.0'},
+        {'name': 'robot5', 'x': '-1.2', 'y':  '0.6', 'z': '0.0'},
+        {'name': 'robot6', 'x': '-1.2', 'y':  '-0.6', 'z': '0.0'},
     ]
 
-    active_robots = ['robot1', 'robot2', 'robot3', 'robot4']
-
+    active_robots = ['robot1', 'robot2', 'robot3', 'robot4', 'robot5', 'robot6']
     actions = []
 
     # ------------------------------------------------------------
@@ -85,6 +86,24 @@ def generate_launch_description():
                 {'use_sim_time': True},
                 {'gazebo_pose_topic': f'/world/{world_name}/dynamic_pose/info'},
                 {'robot_names': active_robots},
+            ],
+        )
+    )
+
+    actions.append(
+        Node(
+            package='swarm_control',
+            executable='relay_tree_manager',
+            name='relay_tree_manager',
+            output='screen',
+            parameters=[
+                {'use_sim_time': True},
+                {'robot_names': active_robots},
+                {'root_relay_name': 'robot1'},
+                {'initial_leader_name': 'robot2'},
+                {'split_distance_m': 4.0},
+                {'branch_angle_deg': 35.0},
+                {'publish_rate_hz': 2.0},
             ],
         )
     )
@@ -282,7 +301,7 @@ def generate_launch_description():
                     {'goal_tolerance_m': 0.45},
                     {'yaw_tolerance_rad': 0.60},
 
-                    {'max_linear_speed': 0.10},
+                    {'max_linear_speed': 0.20},
                     {'max_angular_speed': 0.55},
                     {'linear_gain': 0.55},
                     {'angular_gain': 0.85},
@@ -303,52 +322,49 @@ def generate_launch_description():
                     {'use_sim_time': True},
                     {'robot_name': ns},
                     {'cmd_vel_topic': 'cmd_vel_raw'},
-                    {'path_topic': '/swarm/leader_path'},
 
-                    # Keep zero with ground-truth/world RobotState.
+                    # Kept zero with ground-truth/world RobotState.
                     {'spawn_x': 0.0},
                     {'spawn_y': 0.0},
 
-                    {'lookahead_m': 0.25},
-                    {'goal_tolerance_m': 0.06},
-                    {'min_path_length_m': 0.25},
-
+                    # Chain spacing.
                     {'desired_follow_distance_m': 1.15},
                     {'follow_deadband_m': 0.18},
+                    {'hold_gap_deadband_m': 0.14},
+                    {'hold_heading_deadband_rad': 0.25},
 
-                    {'max_linear_speed': 0.12},
-                    {'min_linear_speed_when_far': 0.04},
-                    {'max_angular_speed': 1.10},
-                    {'linear_gain': 0.45},
-                    {'angular_gain': 1.55},
+                    {'speed_match_enabled': True},
+                    {'speed_match_gain': 0.85},
+                    {'min_creep_speed': 0.025},
+                    {'command_smoothing_alpha_linear': 0.35},
+                    {'command_smoothing_alpha_angular': 0.30},
 
+                    # Follower speed.
+                    {'max_linear_speed': 0.22},
+                    {'min_linear_speed_when_far': 0.07},
+                    {'max_angular_speed': 1.60},
+                    {'linear_gain': 0.75},
+                    {'angular_gain': 1.80},
+
+                    # Robot-to-robot safety.
                     {'min_robot_distance_m': 0.50},
                     {'slow_robot_distance_m': 0.85},
                     {'too_close_reverse_speed': -0.02},
 
-                    {'far_gap_m': 1.50},
-                    {'very_far_gap_m': 2.10},
-                    {'catchup_speed_boost': 1.15},
+                    # Catch-up behavior.
+                    {'far_gap_m': 1.45},
+                    {'very_far_gap_m': 2.00},
+                    {'catchup_speed_boost': 1.50},
 
-                    {'startup_delay_per_slot_sec': 1.8},
+                    # Faster startup release.
+                    # Old behavior waited for about 95% of spacing.
+                    # New behavior starts when predecessor opens 60% of spacing.
+                    {'startup_gap_ratio': 0.60},
+
+                    # Lock one stable chain order after formation_ready.
                     {'lock_chain_order': True},
-                    {'fallback_to_predecessor': True},
 
-                    {'cross_track_gain': 1.10},
-                    {'max_cross_track_correction_rad':  0.35},
 
-                    {'line_hold_enabled': True},
-                    {'line_hold_gain': 0.95},
-                    {'line_hold_integral_gain': 0.10},
-                    {'line_hold_start_delay_sec': 0.5},
-                    {'line_hold_max_correction_rad': 0.35},
-                    {'line_hold_integral_limit': 0.35},
-
-                    {'resync_enabled': True},
-                    {'resync_lateral_error_m': 0.10},
-                    {'resync_release_error_m': 0.04},
-                    {'resync_angular_boost': 1.60},
-                    {'resync_speed_scale': 0.40},
                 ],
             )
         )
@@ -365,14 +381,13 @@ def generate_launch_description():
                     {'robot_name': ns},
                     {'cmd_vel_topic': 'cmd_vel_raw'},
 
-                    {'forward_speed': 0.10},
-                    {'turn_speed': 0.60},
+                    {'forward_speed': 0.20},
+                    {'turn_speed': 0.75},
 
-                    {'front_blocked_distance': 1.25},
-                    {'side_clearance_distance': 0.75},
+                    {'front_blocked_distance': 1.10},
+                    {'side_clearance_distance': 0.65},
                     {'side_avoid_turn_gain': 0.30},
 
-                    # Keep zero with ground-truth/world RobotState.
                     {'spawn_x': 0.0},
                     {'spawn_y': 0.0},
 
@@ -382,8 +397,8 @@ def generate_launch_description():
                     {'leader_start_delay_sec': 1.5},
                     {'leader_wait_for_chain': True},
 
-                    {'leader_slow_chain_gap_m': 1.80},
-                    {'leader_max_chain_gap_m': 2.40},
+                    {'leader_slow_chain_gap_m': 2.20},
+                    {'leader_max_chain_gap_m': 3.00},
                     {'leader_wait_turn_allowed': True},
 
                     {'preferred_heading_deg': 0.0},
@@ -391,9 +406,9 @@ def generate_launch_description():
                     {'max_heading_turn': 0.35},
 
                     {'obstacle_escape_enabled': True},
-                    {'escape_front_clear_distance': 1.60},
-                    {'escape_rejoin_heading_error_deg': 25.0},
-                    {'escape_min_time_sec': 2.0},
+                    {'escape_front_clear_distance': 1.80},
+                    {'escape_rejoin_heading_error_deg': 20.0},
+                    {'escape_min_time_sec': 3.0},
                 ],
             )
         )
@@ -461,12 +476,12 @@ def generate_launch_description():
                     {'enabled': True},
 
                     {'hard_stop_distance': 0.45},
-                    {'slowdown_distance': 1.00},
+                    {'slowdown_distance': 0.60},
                     {'side_stop_distance': 0.22},
-                    {'side_slow_distance': 0.65},
+                    {'side_slow_distance': 0.45},
 
                     {'wall_avoid_gain': 0.04},
-                    {'max_safe_linear_speed': 0.14},
+                    {'max_safe_linear_speed': 0.22},
                 ],
             )
         )
@@ -474,38 +489,38 @@ def generate_launch_description():
     # ------------------------------------------------------------
     # Global line monitor
     # ------------------------------------------------------------
-    actions.append(
-        Node(
-            package='swarm_control',
-            executable='line_alignment_monitor',
-            name='line_alignment_monitor',
-            output='screen',
-            parameters=[
-                {'use_sim_time': True},
-                {'path_topic': '/swarm/leader_path'},
-                {'state_topic': '/swarm/robot_states'},
-                {'chain_order_topic': '/swarm/chain_order'},
-                {'output_topic': '/swarm/line_alignment'},
-                {'check_period_sec': 2.0},
+    # actions.append(
+    #     Node(
+    #         package='swarm_control',
+    #         executable='line_alignment_monitor',
+    #         name='line_alignment_monitor',
+    #         output='screen',
+    #         parameters=[
+    #             {'use_sim_time': True},
+    #             {'path_topic': '/swarm/leader_path'},
+    #             {'state_topic': '/swarm/robot_states'},
+    #             {'chain_order_topic': '/swarm/chain_order'},
+    #             {'output_topic': '/swarm/line_alignment'},
+    #             {'check_period_sec': 2.0},
 
-                {'warn_path_lateral_error_m': 0.12},
-                {'bad_path_lateral_error_m': 0.22},
+    #             {'warn_path_lateral_error_m': 0.12},
+    #             {'bad_path_lateral_error_m': 0.22},
 
-                {'warn_neighbor_line_error_m': 0.12},
-                {'bad_neighbor_line_error_m': 0.22},
+    #             {'warn_neighbor_line_error_m': 0.12},
+    #             {'bad_neighbor_line_error_m': 0.22},
 
-                {'warn_leader_axis_error_m': 0.15},
-                {'bad_leader_axis_error_m': 0.30},
+    #             {'warn_leader_axis_error_m': 0.15},
+    #             {'bad_leader_axis_error_m': 0.30},
 
-                {'warn_lateral_spread_m': 0.15},
-                {'bad_lateral_spread_m': 0.28},
+    #             {'warn_lateral_spread_m': 0.15},
+    #             {'bad_lateral_spread_m': 0.28},
 
-                {'warn_yaw_error_rad': 0.18},
-                {'bad_yaw_error_rad': 0.35},
+    #             {'warn_yaw_error_rad': 0.18},
+    #             {'bad_yaw_error_rad': 0.35},
 
-                {'ignore_leader_for_path_error': True},
-            ],
-        )
-    )
+    #             {'ignore_leader_for_path_error': True},
+    #         ],
+    #     )
+    # )
 
     return LaunchDescription(actions)
