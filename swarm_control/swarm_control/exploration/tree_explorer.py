@@ -7,6 +7,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 from swarm_interfaces.msg import RobotState
 
 from swarm_control.core.cmd_utils import make_twist
@@ -28,6 +29,7 @@ class TreeExplorer(Node):
     def _declare_parameters(self):
         self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel_raw')
+        self.declare_parameter('mission_command_topic', '/swarm/mission_command')
 
         self.declare_parameter('forward_speed', 0.060)
         self.declare_parameter('turn_speed', 0.55)
@@ -47,6 +49,14 @@ class TreeExplorer(Node):
         self.declare_parameter('leader_max_chain_gap_m', 2.60)
         self.declare_parameter('leader_wait_turn_allowed', True)
 
+        # Relay leash:
+        # Keep each moving group leader within communication distance of its
+        # parent relay. This prevents branches from outrunning the relay tree.
+        self.declare_parameter('relay_leash_enabled', True)
+        self.declare_parameter('relay_slow_distance_m', 24.0)
+        self.declare_parameter('relay_stop_distance_m', 30.0)
+        self.declare_parameter('relay_stop_turn_allowed', True)
+
         self.declare_parameter('side_clearance_distance', 0.75)
         self.declare_parameter('side_avoid_turn_gain', 0.30)
 
@@ -56,12 +66,22 @@ class TreeExplorer(Node):
 
         self.declare_parameter('obstacle_escape_enabled', True)
         self.declare_parameter('escape_front_clear_distance', 1.60)
+
+        # Return-home v1:
+        # Group leaders drive back to their parent_relay_id.
+        # Followers keep following through path_follower.
+        # Relays stay stopped for now.
+        self.declare_parameter('return_home_speed', 0.08)
+        self.declare_parameter('return_home_arrival_distance_m', 1.00)
+        self.declare_parameter('return_home_heading_gain', 0.90)
+        self.declare_parameter('return_home_max_turn', 0.45)
         self.declare_parameter('escape_rejoin_heading_error_deg', 25.0)
         self.declare_parameter('escape_min_time_sec', 2.0)
 
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
+        self.mission_command_topic = self.get_parameter('mission_command_topic').value
 
         self.forward_speed = float(self.get_parameter('forward_speed').value)
         self.turn_speed = float(self.get_parameter('turn_speed').value)
@@ -94,6 +114,19 @@ class TreeExplorer(Node):
             self.get_parameter('leader_wait_turn_allowed').value
         )
 
+        self.relay_leash_enabled = bool(
+            self.get_parameter('relay_leash_enabled').value
+        )
+        self.relay_slow_distance_m = float(
+            self.get_parameter('relay_slow_distance_m').value
+        )
+        self.relay_stop_distance_m = float(
+            self.get_parameter('relay_stop_distance_m').value
+        )
+        self.relay_stop_turn_allowed = bool(
+            self.get_parameter('relay_stop_turn_allowed').value
+        )
+
         self.side_clearance_distance = float(
             self.get_parameter('side_clearance_distance').value
         )
@@ -114,6 +147,19 @@ class TreeExplorer(Node):
         )
         self.escape_front_clear_distance = float(
             self.get_parameter('escape_front_clear_distance').value
+        )
+
+        self.return_home_speed = float(
+            self.get_parameter('return_home_speed').value
+        )
+        self.return_home_arrival_distance_m = float(
+            self.get_parameter('return_home_arrival_distance_m').value
+        )
+        self.return_home_heading_gain = float(
+            self.get_parameter('return_home_heading_gain').value
+        )
+        self.return_home_max_turn = float(
+            self.get_parameter('return_home_max_turn').value
         )
         self.escape_rejoin_heading_error_deg = float(
             self.get_parameter('escape_rejoin_heading_error_deg').value
@@ -136,6 +182,15 @@ class TreeExplorer(Node):
         self.assigned_heading_deg = 0.0
         self.is_relay = False
 
+        # Mission command state:
+        #   explore     -> normal behavior
+        #   stop        -> all leaders stop
+        #   return_home -> placeholder for next phase; stop for now
+        self.mission_mode = 'explore'
+        self.last_mission_log_ns = 0
+        self.last_return_home_log_ns = 0
+        self.return_home_arrived = False
+
         self.other_robots = {}
 
         self.front = float('inf')
@@ -146,6 +201,7 @@ class TreeExplorer(Node):
 
         self.became_leader_time_ns = None
         self.last_chain_status_log_ns = 0
+        self.last_relay_leash_log_ns = 0
         self.locked_chain_order = []
 
         # Leader exploration state machine.
@@ -179,7 +235,69 @@ class TreeExplorer(Node):
             10,
         )
 
+        self.create_subscription(
+            String,
+            self.mission_command_topic,
+            self.mission_command_callback,
+            10,
+        )
+
         self.create_timer(0.1, self.control_loop)
+
+    def mission_command_callback(self, msg):
+        """
+        Accept either plain text:
+          explore
+          stop
+          return_home
+
+        or small JSON:
+          {"mode":"explore"}
+          {"mode":"stop"}
+          {"mode":"return_home"}
+        """
+        raw = (msg.data or '').strip()
+
+        if not raw:
+            return
+
+        mode = raw
+
+        if raw.startswith('{'):
+            lowered = raw.lower()
+            if '"stop"' in lowered or "'stop'" in lowered:
+                mode = 'stop'
+            elif '"return_home"' in lowered or "'return_home'" in lowered:
+                mode = 'return_home'
+            elif '"explore"' in lowered or "'explore'" in lowered:
+                mode = 'explore'
+
+        mode = mode.strip().lower()
+
+        if mode not in ('explore', 'stop', 'return_home'):
+            self.get_logger().warn(
+                f'[{self.robot_name}] ignoring unknown mission mode: {raw}'
+            )
+            return
+
+        if mode == self.mission_mode:
+            return
+
+        self.mission_mode = mode
+        self._publish_stop()
+        self.return_home_arrived = False
+
+        # Reset leader behavior when resuming exploration so obstacle/heading
+        # state does not continue from before the stop.
+        if mode == 'explore':
+            self.mode = 'CRUISE'
+            self.avoid_turn_sign = 0.0
+            if self.is_leader:
+                self.became_leader_time_ns = self.get_clock().now().nanoseconds
+
+        self.get_logger().info(
+            f'[{self.robot_name}] mission mode changed to {self.mission_mode}'
+        )
 
     def odom_callback(self, msg):
         # Fallback only, before /swarm/robot_states for this robot arrives.
@@ -263,11 +381,21 @@ class TreeExplorer(Node):
             self._publish_stop()
             return
 
+        if self.mission_mode == 'stop':
+            self._publish_stop()
+            self._log_mission_hold()
+            return
+
         if self.is_relay or self.current_role in ('root_relay', 'relay'):
             self._publish_stop()
             return
 
         if not self.is_leader:
+            return
+
+        if self.mission_mode == 'return_home':
+            linear, angular = self._compute_return_home_command()
+            self.cmd_pub.publish(make_twist(linear, angular))
             return
 
         if not self._leader_start_delay_done():
@@ -283,7 +411,92 @@ class TreeExplorer(Node):
             if scale <= 0.01 and not self.leader_wait_turn_allowed:
                 angular = 0.0
 
+        if self.relay_leash_enabled:
+            scale, distance_to_parent = self._relay_leash_speed_scale()
+            linear *= scale
+
+            if scale <= 0.01 and not self.relay_stop_turn_allowed:
+                angular = 0.0
+
+            self._log_relay_leash_status(distance_to_parent, scale)
+
         self.cmd_pub.publish(make_twist(linear, angular))
+
+    def _log_mission_hold(self):
+        now_ns = self.get_clock().now().nanoseconds
+
+        if now_ns - self.last_mission_log_ns < 3_000_000_000:
+            return
+
+        self.last_mission_log_ns = now_ns
+
+        if self.is_leader or self.current_role in ('leader', 'group_leader'):
+            self.get_logger().info(
+                f'[{self.robot_name}] holding due to mission mode: {self.mission_mode}'
+            )
+
+    def _compute_return_home_command(self):
+        """Return-home v1: leader drives directly to its parent relay."""
+        if self.return_home_arrived:
+            return 0.0, 0.0
+
+        if not self.parent_relay_id:
+            self._log_return_home_status('no parent_relay_id; holding')
+            return 0.0, 0.0
+
+        parent = self.other_robots.get(self.parent_relay_id)
+
+        if parent is None or not parent.active:
+            self._log_return_home_status(
+                f'waiting for parent relay {self.parent_relay_id} state'
+            )
+            return 0.0, 0.0
+
+        dx = parent.x - self.x
+        dy = parent.y - self.y
+        distance = math.hypot(dx, dy)
+
+        if distance <= self.return_home_arrival_distance_m:
+            self.return_home_arrived = True
+            self._log_return_home_status(
+                f'arrived at parent relay {self.parent_relay_id}: {distance:.2f}m'
+            )
+            return 0.0, 0.0
+
+        desired_heading = math.atan2(dy, dx)
+        heading_error = normalize_angle(desired_heading - self.yaw)
+
+        angular = self.return_home_heading_gain * heading_error
+        angular = max(-self.return_home_max_turn, min(self.return_home_max_turn, angular))
+
+        linear = self.return_home_speed
+
+        abs_err = abs(heading_error)
+        if abs_err > 1.30:
+            linear *= 0.25
+        elif abs_err > 0.85:
+            linear *= 0.45
+        elif abs_err > 0.45:
+            linear *= 0.75
+
+        # Slow down close to relay.
+        if distance < 2.0 * self.return_home_arrival_distance_m:
+            linear *= max(0.25, distance / (2.0 * self.return_home_arrival_distance_m))
+
+        self._log_return_home_status(
+            f'to parent={self.parent_relay_id}, distance={distance:.2f}m'
+        )
+        return linear, angular
+
+    def _log_return_home_status(self, text):
+        now_ns = self.get_clock().now().nanoseconds
+
+        if now_ns - self.last_return_home_log_ns < 2_000_000_000:
+            return
+
+        self.last_return_home_log_ns = now_ns
+        if self.is_leader or self.current_role in ('leader', 'group_leader'):
+            self.get_logger().info(f'[{self.robot_name}] return_home: {text}')
 
     def _leader_start_delay_done(self):
         if self.became_leader_time_ns is None:
@@ -425,6 +638,61 @@ class TreeExplorer(Node):
 
         linear = min(self.forward_speed, 0.075)
         return linear, angular
+
+    def _relay_leash_speed_scale(self):
+        """
+        Slow or stop a group leader if it is too far from its parent relay.
+
+        The relay manager writes parent_relay_id into RobotState. For root-level
+        groups, this is the root relay. For child groups, this is the relay left
+        at the split point. The group leader should not outrun that parent relay.
+        """
+        if not self.parent_relay_id:
+            return 1.0, None
+
+        parent = self.other_robots.get(self.parent_relay_id)
+
+        if parent is None or not parent.active:
+            # Do not freeze on missing data; keep moving but log via distance None.
+            return 1.0, None
+
+        distance = math.hypot(parent.x - self.x, parent.y - self.y)
+
+        if distance >= self.relay_stop_distance_m:
+            return 0.0, distance
+
+        if distance >= self.relay_slow_distance_m:
+            span = self.relay_stop_distance_m - self.relay_slow_distance_m
+
+            if span <= 0.01:
+                return 0.0, distance
+
+            scale = 1.0 - ((distance - self.relay_slow_distance_m) / span)
+            return max(0.20, min(1.0, scale)), distance
+
+        return 1.0, distance
+
+    def _log_relay_leash_status(self, distance, scale):
+        now_ns = self.get_clock().now().nanoseconds
+
+        if now_ns - self.last_relay_leash_log_ns < 2_000_000_000:
+            return
+
+        if distance is None:
+            if self.parent_relay_id:
+                self.last_relay_leash_log_ns = now_ns
+                self.get_logger().warn(
+                    f'[{self.robot_name}] relay leash: parent relay '
+                    f'{self.parent_relay_id} state missing'
+                )
+            return
+
+        if scale < 0.99:
+            self.last_relay_leash_log_ns = now_ns
+            self.get_logger().info(
+                f'[{self.robot_name}] relay leash: parent={self.parent_relay_id}, '
+                f'distance={distance:.2f}m, scale={scale:.2f}'
+            )
 
     def _chain_speed_scale(self):
         order = self._get_chain_order()
