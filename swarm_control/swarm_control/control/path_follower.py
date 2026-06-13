@@ -82,6 +82,10 @@ class PathFollower(Node):
 
         self.declare_parameter('lock_chain_order', True)
 
+        # Relay-tree mode: assignments from relay_tree_manager are enough to start.
+        # Keep this False unless you explicitly want formation_manager to gate movement.
+        self.declare_parameter('require_formation_ready', False)
+
         # Kept for launch-file compatibility, but unused in this simplified file.
         self.declare_parameter('lookahead_m', 0.25)
         self.declare_parameter('goal_tolerance_m', 0.06)
@@ -145,6 +149,9 @@ class PathFollower(Node):
 
         self.startup_gap_ratio = float(self.get_parameter('startup_gap_ratio').value)
         self.lock_chain_order = bool(self.get_parameter('lock_chain_order').value)
+        self.require_formation_ready = bool(
+            self.get_parameter('require_formation_ready').value
+        )
 
         self.hold_gap_deadband_m = float(
             self.get_parameter('hold_gap_deadband_m').value
@@ -180,6 +187,8 @@ class PathFollower(Node):
 
         self.current_role = 'follower'
         self.current_leader_id = ''
+        self.group_id = ''
+        self.is_relay = False
         self.is_leader = False
 
         self.other_robots: Dict[str, RobotState] = {}
@@ -226,15 +235,38 @@ class PathFollower(Node):
         self.have_self_state = True
 
         old_leader = self.current_leader_id
+        old_group = self.group_id
+        old_role = self.current_role
 
         self.current_role = msg.role
         self.current_leader_id = msg.leader_id
-        self.is_leader = msg.role == 'leader' and msg.leader_id == self.robot_name
+        self.group_id = msg.group_id
+        self.is_relay = msg.is_relay or msg.role in ('root_relay', 'relay')
 
-        if old_leader and self.current_leader_id != old_leader:
+        # Relay-tree mode:
+        # - group_leader is a leader.
+        # - root_relay / relay must never be treated as a moving leader.
+        self.is_leader = (
+            msg.role in ('leader', 'group_leader')
+            and msg.leader_id == self.robot_name
+            and not self.is_relay
+        )
+
+        if (
+            (old_leader and self.current_leader_id != old_leader)
+            or (old_group and self.group_id != old_group)
+            or (old_role and self.current_role != old_role)
+        ):
             self._reset_for_new_leader(old_leader, self.current_leader_id)
 
     def formation_ready_cb(self, msg: Bool):
+        # In relay-tree mode the relay_tree_manager assignment is the movement gate.
+        # If require_formation_ready is False, ignore formation_manager completely.
+        # Otherwise an early/stale formation_ready message can lock a bad chain order
+        # while the robots are still side-by-side at spawn.
+        if not self.require_formation_ready:
+            return
+
         if not msg.data:
             self.formation_done = False
             self.startup_released = False
@@ -272,10 +304,22 @@ class PathFollower(Node):
             self.publish_cmd(0.0, 0.0)
             return
 
-        if not self.formation_done:
+        # Relays are physical breadcrumbs: always stay stopped.
+        if self.is_relay or self.current_role in ('root_relay', 'relay'):
+            self.publish_cmd(0.0, 0.0)
             return
 
-        if self.is_leader or self.current_role != 'follower' or not self.current_leader_id:
+        # In relay-tree mode the role assignment is the formation gate.
+        # The old formation_manager can still be used by setting
+        # require_formation_ready:=True.
+        if self.require_formation_ready and not self.formation_done:
+            return
+
+        if (
+            self.is_leader
+            or self.current_role not in ('follower', 'group_follower')
+            or not self.current_leader_id
+        ):
             return
 
         order = self.get_chain_order()
@@ -344,7 +388,16 @@ class PathFollower(Node):
 
         robots = [
             r for r in self.other_robots.values()
-            if r.active and r.leader_id == leader_name
+            if (
+                r.active
+                and r.group_id == self.group_id
+                and not r.is_relay
+                and r.role not in ('root_relay', 'relay')
+                and (
+                    r.leader_id == leader_name
+                    or r.robot_name == leader_name
+                )
+            )
         ]
 
         if not robots:
@@ -360,14 +413,15 @@ class PathFollower(Node):
             dy = robot.y - leader.y
             return dx * fx + dy * fy
 
-        ordered = sorted(robots, key=along_leader_axis, reverse=True)
+        ordered = sorted(
+            robots,
+            key=lambda r: (along_leader_axis(r), -self.robot_number(r.robot_name)),
+            reverse=True,
+        )
         names = [r.robot_name for r in ordered]
 
         if leader_name in names:
             names.remove(leader_name)
-
-        # Stable fallback by robot number when robots start very close together.
-        names = sorted(names, key=self.robot_number)
 
         return [leader_name] + names
 
@@ -385,7 +439,12 @@ class PathFollower(Node):
         predecessor_name = order[index - 1]
         predecessor = self.other_robots.get(predecessor_name)
 
-        if predecessor is None or not predecessor.active:
+        if (
+            predecessor is None
+            or not predecessor.active
+            or predecessor.is_relay
+            or predecessor.role in ('root_relay', 'relay')
+        ):
             return None
 
         return predecessor
@@ -497,14 +556,12 @@ class PathFollower(Node):
         # A hard "return None" near the target creates start/stop motion when
         # the predecessor is moving slowly. Smooth hold/speed matching is handled
         # in compute_spacing_hold_command() and apply_gap_speed_control().
-        angle_to_predecessor = math.atan2(dy, dx)
-
-        tx = predecessor.x - self.desired_follow_distance_m * math.cos(
-            angle_to_predecessor
-        )
-        ty = predecessor.y - self.desired_follow_distance_m * math.sin(
-            angle_to_predecessor
-        )
+        # Target a slot behind the predecessor along the predecessor heading.
+        # This is much more stable for the 2-row spawn layout than targeting
+        # the radial line between follower and predecessor. The old radial target
+        # could pull one robot sideways out of the chain during startup.
+        tx = predecessor.x - self.desired_follow_distance_m * math.cos(predecessor.yaw)
+        ty = predecessor.y - self.desired_follow_distance_m * math.sin(predecessor.yaw)
 
         return tx, ty, distance
 

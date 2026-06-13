@@ -1,4 +1,5 @@
 from typing import Dict
+import json
 
 import rclpy
 from rclpy.node import Node
@@ -6,6 +7,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from swarm_interfaces.msg import RobotState
@@ -19,6 +21,13 @@ from swarm_control.core.scan_utils import sector_min
 
 
 class SwarmMember(Node):
+    """
+    Swarm state publisher with relay-tree assignment support.
+
+    This node still publishes /swarm/robot_states, but role/leader/group data can
+    now be overridden by /swarm/role_assignments from relay_tree_manager.py.
+    """
+
     def __init__(self):
         super().__init__('swarm_member')
 
@@ -38,9 +47,11 @@ class SwarmMember(Node):
         self.declare_parameter('spawn_x', 0.0)
         self.declare_parameter('spawn_y', 0.0)
 
-        # NEW: use Gazebo true pose if topic exists.
         self.declare_parameter('use_ground_truth_pose', True)
         self.declare_parameter('ground_truth_pose_topic', 'ground_truth_pose')
+
+        self.declare_parameter('use_role_assignments', True)
+        self.declare_parameter('role_assignment_topic', '/swarm/role_assignments')
 
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
@@ -62,6 +73,13 @@ class SwarmMember(Node):
             'ground_truth_pose_topic'
         ).value
 
+        self.use_role_assignments = bool(
+            self.get_parameter('use_role_assignments').value
+        )
+        self.role_assignment_topic = self.get_parameter(
+            'role_assignment_topic'
+        ).value
+
     def _init_state(self):
         self.x = 0.0
         self.y = 0.0
@@ -75,11 +93,21 @@ class SwarmMember(Node):
         self.current_leader = ''
         self.last_logged_leader = ''
 
+        self.group_id = ''
+        self.parent_group_id = ''
+        self.parent_relay_id = ''
+        self.assigned_heading_deg = 0.0
+        self.branch_depth = 0
+        self.active = True
+
         self.last_states: Dict[str, RobotState] = {}
 
         self.initial_election_done = False
         self.reselect_requested = False
         self.start_time_ns = self.get_clock().now().nanoseconds
+
+        self.role_assignments = {}
+        self.have_assignment = False
 
     def _init_ros_interfaces(self):
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
@@ -90,6 +118,14 @@ class SwarmMember(Node):
                 PoseStamped,
                 self.ground_truth_pose_topic,
                 self.ground_truth_pose_callback,
+                10,
+            )
+
+        if self.use_role_assignments:
+            self.create_subscription(
+                String,
+                self.role_assignment_topic,
+                self.assignment_callback,
                 10,
             )
 
@@ -118,7 +154,6 @@ class SwarmMember(Node):
     def odom_callback(self, msg: Odometry):
         self.linear_speed = msg.twist.twist.linear.x
 
-        # If Gazebo true pose is active, do not overwrite x/y/yaw with odom.
         if self.use_ground_truth_pose and self.have_ground_truth_pose:
             return
 
@@ -127,16 +162,12 @@ class SwarmMember(Node):
         self.yaw = quaternion_to_yaw(msg.pose.pose.orientation)
 
     def ground_truth_pose_callback(self, msg: PoseStamped):
-        # This pose should already be in Gazebo/world coordinates.
         self.x = msg.pose.position.x
         self.y = msg.pose.position.y
         self.yaw = quaternion_to_yaw(msg.pose.orientation)
 
         if not self.have_ground_truth_pose:
             self.have_ground_truth_pose = True
-            # self.get_logger().info(
-            #     f'[{self.robot_name}] using Gazebo ground truth pose'
-            # )
 
     def scan_callback(self, msg: LaserScan):
         if not msg.ranges:
@@ -148,6 +179,59 @@ class SwarmMember(Node):
             half_width=0.35,
             default=0.0,
         )
+
+    def assignment_callback(self, msg: String):
+        try:
+            assignments = json.loads(msg.data)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'[{self.robot_name}] failed to parse role assignment: {exc}'
+            )
+            return
+
+        if not isinstance(assignments, dict):
+            return
+
+        self.role_assignments = assignments
+
+        assignment = assignments.get(self.robot_name)
+        if assignment is None:
+            self.have_assignment = False
+            return
+
+        self.have_assignment = True
+        self._apply_assignment(assignment)
+
+    def _apply_assignment(self, assignment: dict):
+        old_role = self.role
+        old_leader = self.current_leader
+        old_group = self.group_id
+
+        self.role = str(assignment.get('role', self.role))
+        self.current_leader = str(assignment.get('leader_id', self.current_leader))
+        self.group_id = str(assignment.get('group_id', self.group_id))
+        self.parent_group_id = str(
+            assignment.get('parent_group_id', self.parent_group_id)
+        )
+        self.parent_relay_id = str(
+            assignment.get('parent_relay_id', self.parent_relay_id)
+        )
+        self.assigned_heading_deg = float(
+            assignment.get('assigned_heading_deg', self.assigned_heading_deg)
+        )
+        self.branch_depth = int(assignment.get('branch_depth', self.branch_depth))
+        self.active = bool(assignment.get('active', self.active))
+
+        if (
+            self.role != old_role
+            or self.current_leader != old_leader
+            or self.group_id != old_group
+        ):
+            self.get_logger().info(
+                f'[{self.robot_name}] assignment: '
+                f'role={self.role} leader={self.current_leader} '
+                f'group={self.group_id} heading={self.assigned_heading_deg:.1f}'
+            )
 
     def state_callback(self, msg: RobotState):
         self.last_states[msg.robot_name] = msg
@@ -162,8 +246,11 @@ class SwarmMember(Node):
     def publish_state(self):
         now = self.get_clock().now()
 
-        self._update_leader_if_needed(now)
-        self._update_role()
+        if self.use_role_assignments and self.have_assignment:
+            pass
+        else:
+            self._update_leader_if_needed(now)
+            self._update_role_from_election()
 
         msg = self._build_robot_state_msg(now)
         self.last_states[self.robot_name] = msg
@@ -205,9 +292,11 @@ class SwarmMember(Node):
         )
         return startup_ready or self.reselect_requested
 
-    def _update_role(self):
+    def _update_role_from_election(self):
         if self.current_leader and self.current_leader == self.robot_name:
             self.role = 'leader'
+            self.group_id = 'group_0'
+            self.assigned_heading_deg = 0.0
         else:
             self.role = 'follower'
 
@@ -225,7 +314,16 @@ class SwarmMember(Node):
         msg.leader_score = self._compute_leader_score()
         msg.role = self.role
         msg.leader_id = self.current_leader
-        msg.active = True
+        msg.active = self.active
+
+        msg.group_id = self.group_id
+        msg.parent_group_id = self.parent_group_id
+        msg.parent_relay_id = self.parent_relay_id
+        msg.assigned_heading_deg = self.assigned_heading_deg
+        msg.branch_depth = self.branch_depth
+
+        msg.is_relay = self.role in ('root_relay', 'relay')
+        msg.is_group_leader = self.role in ('leader', 'group_leader')
 
         return msg
 
@@ -278,9 +376,9 @@ class SwarmMember(Node):
         if self.current_leader == self.last_logged_leader:
             return
 
-        # self.get_logger().info(
-        #     f'[{self.robot_name}] {label}: {self.current_leader}'
-        # )
+        self.get_logger().info(
+            f'[{self.robot_name}] {label}: {self.current_leader}'
+        )
         self.last_logged_leader = self.current_leader
 
 

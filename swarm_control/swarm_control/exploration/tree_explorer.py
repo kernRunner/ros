@@ -131,6 +131,10 @@ class TreeExplorer(Node):
         self.is_leader = False
         self.current_role = 'follower'
         self.current_leader_id = ''
+        self.group_id = ''
+        self.parent_relay_id = ''
+        self.assigned_heading_deg = 0.0
+        self.is_relay = False
 
         self.other_robots = {}
 
@@ -201,14 +205,47 @@ class TreeExplorer(Node):
 
         self.current_role = msg.role
         self.current_leader_id = msg.leader_id
-        self.is_leader = msg.role == 'leader' and msg.leader_id == self.robot_name
+        self.group_id = msg.group_id
+        self.parent_relay_id = msg.parent_relay_id
+        self.assigned_heading_deg = msg.assigned_heading_deg
+        self.is_relay = msg.is_relay
+
+        # Relay-tree mode:
+        #   - group_leader explores.
+        #   - old leader role is still accepted for backward compatibility.
+        #   - relay/root_relay must not move.
+        self.is_leader = (
+            msg.role in ('leader', 'group_leader')
+            and msg.leader_id == self.robot_name
+            and not msg.is_relay
+        )
+
+        # Use the heading assigned by relay_tree_manager.
+        if self.is_leader:
+            assigned_heading = math.radians(msg.assigned_heading_deg)
+            if abs(normalize_angle(assigned_heading - self.preferred_heading)) > 0.01:
+                self.preferred_heading = assigned_heading
+                self.preferred_heading_deg = msg.assigned_heading_deg
+                self.get_logger().info(
+                    f'[{self.robot_name}] assigned heading '
+                    f'{self.preferred_heading_deg:.1f} deg for group {self.group_id}'
+                )
 
         if self.is_leader and not was_leader:
             self.became_leader_time_ns = self.get_clock().now().nanoseconds
+            self.mode = 'CRUISE'
+            self.avoid_turn_sign = 0.0
+            self.locked_chain_order = []
             self.get_logger().info(
-                f'[{self.robot_name}] leader waiting '
+                f'[{self.robot_name}] group leader waiting '
                 f'{self.leader_start_delay_sec:.1f}s before exploring'
             )
+
+        if not self.is_leader and was_leader:
+            self._publish_stop()
+            self.mode = 'CRUISE'
+            self.avoid_turn_sign = 0.0
+            self.locked_chain_order = []
 
     def scan_callback(self, msg):
         if not msg.ranges:
@@ -223,6 +260,10 @@ class TreeExplorer(Node):
 
     def control_loop(self):
         if not self.have_self_state:
+            self._publish_stop()
+            return
+
+        if self.is_relay or self.current_role in ('root_relay', 'relay'):
             self._publish_stop()
             return
 
@@ -414,7 +455,13 @@ class TreeExplorer(Node):
 
         robots = [
             r for r in self.other_robots.values()
-            if r.active and r.leader_id == self.robot_name
+            if (
+                r.active
+                and r.leader_id == self.robot_name
+                and r.group_id == self.group_id
+                and not r.is_relay
+                and r.role not in ('root_relay', 'relay')
+            )
         ]
 
         names = [r.robot_name for r in robots]
@@ -429,10 +476,21 @@ class TreeExplorer(Node):
 
         order = [self.robot_name] + ordered
 
-        if len(order) >= len(self.other_robots):
+        group_robot_count = len([
+            r for r in self.other_robots.values()
+            if (
+                r.active
+                and r.group_id == self.group_id
+                and not r.is_relay
+                and r.role not in ('root_relay', 'relay')
+            )
+        ])
+
+        if group_robot_count > 0 and len(order) >= group_robot_count:
             self.locked_chain_order = order
             self.get_logger().info(
-                f'[{self.robot_name}] locked leader chain: {" -> ".join(order)}'
+                f'[{self.robot_name}] locked group chain '
+                f'{self.group_id}: {" -> ".join(order)}'
             )
 
         return order
