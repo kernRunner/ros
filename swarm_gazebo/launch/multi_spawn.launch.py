@@ -12,23 +12,36 @@ def generate_launch_description():
 
     world_name = 'tree_exploration_test'
     world_file = os.path.join(gazebo_pkg, 'worlds', f'{world_name}.sdf')
-    model_file = os.path.join(gazebo_pkg, 'models', 'swarm_bot_light.sdf')
+    model_file = os.path.join(gazebo_pkg, 'models', 'swarm_bot_ultra_light_no_lidar.sdf')
 
     robots = [
-        {'name': 'robot1', 'x': '1.2',  'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot2', 'x': '1.2',  'y': '-0.6', 'z': '0.0'},
-        {'name': 'robot3', 'x': '0.0',  'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot4', 'x': '0.0',  'y': '-0.6', 'z': '0.0'},
-        {'name': 'robot5', 'x': '-1.2', 'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot6', 'x': '-1.2', 'y': '-0.6', 'z': '0.0'},
-        {'name': 'robot7', 'x': '-2.4', 'y':  '0.6', 'z': '0.0'},
-        {'name': 'robot8', 'x': '-2.4', 'y': '-0.6', 'z': '0.0'},
+        # front column
+        {'name': 'robot1', 'x': '1.2',  'y':  '1.2', 'z': '0.0'},
+        {'name': 'robot2', 'x': '1.2',  'y':  '0.0', 'z': '0.0'},
+        {'name': 'robot3', 'x': '1.2',  'y': '-1.2', 'z': '0.0'},
+
+        # middle column
+        {'name': 'robot4', 'x': '0.0',  'y':  '1.2', 'z': '0.0'},
+        {'name': 'robot5', 'x': '0.0',  'y':  '0.0', 'z': '0.0'},
+        {'name': 'robot6', 'x': '0.0',  'y': '-1.2', 'z': '0.0'},
+
+        # rear column
+        {'name': 'robot7', 'x': '-1.2', 'y':  '1.2', 'z': '0.0'},
+        {'name': 'robot8', 'x': '-1.2', 'y':  '0.0', 'z': '0.0'},
+        {'name': 'robot9', 'x': '-1.2', 'y': '-1.2', 'z': '0.0'},
     ]
 
     active_robots = [
-        'robot1', 'robot2', 'robot3', 'robot4',
-        'robot5', 'robot6', 'robot7', 'robot8',
+        'robot1', 'robot2', 'robot3',
+        'robot4', 'robot5', 'robot6',
+        'robot7', 'robot8', 'robot9',
     ]
+
+    # Same as active_robots, but named explicitly for the path follower.
+    # This creates the S-shaped startup chain:
+    # robot1 -> robot2 -> robot3 -> robot6 -> robot5 -> robot4 -> robot7 -> robot8 -> robot9
+    explicit_chain_order = list(active_robots)
+
     actions = []
 
     # ------------------------------------------------------------
@@ -118,14 +131,52 @@ def generate_launch_description():
                 {'initial_leader_name': 'robot1'},
                 {'initial_heading_deg': 0.0},
 
+                {'relay_selection_mode': 'chain_tail'},
+                {'explicit_chain_order': explicit_chain_order},
+
                 {'split_distance_m': 25.0},
-                {'branch_angle_deg': 30.0},
+                {'branch_angle_deg': 35.0},
                 {'publish_rate_hz': 1.0},
 
+                {'single_robot_groups_are_leaders': True},
                 {'min_group_size_to_split': 3},
                 {'max_branch_depth': 3},
-                {'min_group_age_before_split_sec': 8.0},
-                {'single_robot_groups_are_leaders': True},
+                {'min_group_age_before_split_sec': 10.0},
+
+                {'require_group_stable_before_split': True},
+                {'max_pair_gap_for_split_m': 2.5},
+                {'min_relay_progress_ratio': 0.80},
+
+            ],
+        )
+    )
+
+    actions.append(
+        Node(
+            package='swarm_control',
+            executable='relay_tree_evaluator',
+            name='relay_tree_evaluator',
+            output='screen',
+            parameters=[
+                {'use_sim_time': True},
+
+                {'state_topic': '/swarm/robot_states'},
+                {'eval_topic': '/swarm/relay_tree_eval'},
+                {'text_topic': '/swarm/relay_tree_eval_text'},
+                {'marker_topic': '/swarm/relay_tree_eval_markers'},
+
+                {'frame_id': 'world'},
+                {'publish_rate_hz': 1.0},
+                {'state_timeout_sec': 3.0},
+
+                {'show_rviz_text': True},
+                {'rviz_text_x': -8.0},
+                {'rviz_text_y': 8.0},
+                {'rviz_text_z': 1.5},
+                {'rviz_text_height': 0.30},
+
+                {'max_recent_events_displayed': 5},
+                {'max_relay_link_distance_m': 30.0},
             ],
         )
     )
@@ -152,6 +203,22 @@ def generate_launch_description():
                 {'show_all_follower_links': True},
                 {'show_parent_relay_links': True},
                 {'show_text_labels': True},
+            ],
+        )
+    )
+
+    actions.append(
+        Node(
+            package='swarm_control',
+            executable='mission_controller',
+            name='mission_controller',
+            output='screen',
+            parameters=[
+                {'use_sim_time': True},
+                {'command_topic': '/swarm/mission_command'},
+                {'mode_topic': '/swarm/mission_mode'},
+                {'publish_rate_hz': 5.0},
+                {'default_mode': 'explore'},
             ],
         )
     )
@@ -227,16 +294,16 @@ def generate_launch_description():
                 arguments=[
                     f'/model/{ns}/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist',
                     f'/model/{ns}/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry',
-                    f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan'
-                    f'@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+                    # f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan'
+                    # f'@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
                 ],
                 remappings=[
                     (f'/model/{ns}/cmd_vel', 'cmd_vel'),
                     (f'/model/{ns}/odometry', 'odom'),
-                    (
-                        f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan',
-                        'scan',
-                    ),
+                    # (
+                    #     f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan',
+                    #     'scan',
+                    # ),
                 ],
             )
         )
@@ -383,9 +450,9 @@ def generate_launch_description():
                     {'spawn_y': 0.0},
 
                     # Chain spacing.
-                    {'desired_follow_distance_m': 1.25},
-                    {'follow_deadband_m': 0.22},
-                    {'hold_gap_deadband_m': 0.18},
+                    {'desired_follow_distance_m': 0.95},
+                    {'follow_deadband_m': 0.18},
+                    {'hold_gap_deadband_m': 0.16},
                     {'hold_heading_deadband_rad': 0.35},
 
                     {'speed_match_enabled': True},
@@ -395,23 +462,36 @@ def generate_launch_description():
                     {'command_smoothing_alpha_angular': 0.22},
 
                     {'max_linear_speed': 0.14},
-                    {'min_linear_speed_when_far': 0.04},
-                    {'max_angular_speed': 0.95},
-                    {'linear_gain': 0.45},
-                    {'angular_gain': 1.10},
+                    {'min_linear_speed_when_far': 0.05},
+                    {'max_angular_speed': 0.70},
+                    {'linear_gain': 0.35},
+                    {'angular_gain': 0.75},
 
-                    {'min_robot_distance_m': 0.55},
-                    {'slow_robot_distance_m': 1.00},
+                    {'min_robot_distance_m': 0.42},
+                    {'slow_robot_distance_m': 0.70},
                     {'too_close_reverse_speed': -0.015},
 
-                    {'far_gap_m': 1.70},
-                    {'very_far_gap_m': 2.40},
-                    {'catchup_speed_boost': 1.20},
+                    {'far_gap_m': 1.25},
+                    {'very_far_gap_m': 1.70},
+                    {'catchup_speed_boost': 1.35},
 
-                    {'startup_gap_ratio': 1.00},
+                    {'startup_gap_ratio': 0.85},
                     {'lock_chain_order': False},
                     {'require_formation_ready': False},
 
+                    {'sequential_start_enabled': True},
+                    {'sequential_slot_delay_sec': 0.1},
+                    {'sequential_front_pair_gap_ratio': 0.85},
+                    {'sequential_front_alignment_tolerance_rad': 0.70},
+                    {'sequential_self_alignment_tolerance_rad': 0.45},
+                    {'sequential_prealign_enabled': False},
+                    {'sequential_prealign_angular_gain': 0.65},
+                    {'sequential_predecessor_move_m': 0.10},
+
+                    {'chain_order_mode': 'explicit'},
+                    {'explicit_chain_order': explicit_chain_order},
+
+                    {'mission_command_topic': '/swarm/mission_mode'},
 
                 ],
             )
@@ -429,8 +509,8 @@ def generate_launch_description():
                     {'robot_name': ns},
                     {'cmd_vel_topic': 'cmd_vel_raw'},
 
-                    {'forward_speed': 0.12},
-                    {'turn_speed': 0.45},
+                    {'forward_speed': 0.08},
+                    {'turn_speed': 0.30},
 
                     {'front_blocked_distance': 1.10},
                     {'side_clearance_distance': 0.65},
@@ -442,12 +522,17 @@ def generate_launch_description():
                     {'chain_spacing_m': 1.15},
                     {'formation_tolerance_m': 0.35},
 
-                    {'leader_start_delay_sec': 6.0},
+                    {'leader_start_delay_sec': 10.0},
                     {'leader_wait_for_chain': False},
 
-                    {'leader_slow_chain_gap_m': 2.20},
-                    {'leader_max_chain_gap_m': 3.00},
+                    {'leader_slow_chain_gap_m': 2.00},
+                    {'leader_max_chain_gap_m': 2.80},
                     {'leader_wait_turn_allowed': True},
+
+                    {'relay_leash_enabled': True},
+                    {'relay_slow_distance_m': 32.0},
+                    {'relay_stop_distance_m': 40.0},
+                    {'relay_stop_turn_allowed': True},
 
                     {'preferred_heading_deg': 0.0},
                     {'heading_gain': 0.65},
@@ -457,6 +542,12 @@ def generate_launch_description():
                     {'escape_front_clear_distance': 1.80},
                     {'escape_rejoin_heading_error_deg': 20.0},
                     {'escape_min_time_sec': 3.0},
+
+                    {'mission_command_topic': '/swarm/mission_mode'},
+                    {'return_home_speed': 0.08},
+                    {'return_home_arrival_distance_m': 1.00},
+                    {'return_home_heading_gain': 0.90},
+                    {'return_home_max_turn': 0.45},
                 ],
             )
         )
@@ -523,13 +614,12 @@ def generate_launch_description():
                     {'robot_name': ns},
                     {'enabled': True},
 
-                    {'hard_stop_distance': 0.50},
-                    {'slowdown_distance': 0.85},
-                    {'side_stop_distance': 0.22},
-                    {'side_slow_distance': 0.45},
-
+                    {'hard_stop_distance': 0.34},
+                    {'slowdown_distance': 0.50},
+                    {'side_stop_distance': 0.13},
+                    {'side_slow_distance': 0.25},
                     {'wall_avoid_gain': 0.04},
-                    {'max_safe_linear_speed': 0.15},
+                    {'max_safe_linear_speed': 0.14},
                 ],
             )
         )

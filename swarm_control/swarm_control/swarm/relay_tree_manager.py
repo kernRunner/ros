@@ -74,6 +74,12 @@ class RelayTreeManager(Node):
         self.declare_parameter('initial_leader_name', 'robot1')
         self.declare_parameter('initial_heading_deg', 0.0)
 
+        # Relay selection:
+        # - 'geometry': old behavior, choose rearmost by projection along heading
+        # - 'chain_tail': choose the tail of the assigned chain/group order
+        self.declare_parameter('relay_selection_mode', 'chain_tail')
+        self.declare_parameter('explicit_chain_order', [''])
+
         self.declare_parameter('split_distance_m', 25.0)
         self.declare_parameter('branch_angle_deg', 30.0)
         self.declare_parameter('publish_rate_hz', 1.0)
@@ -83,6 +89,16 @@ class RelayTreeManager(Node):
 
         # Prevent instant re-splitting right after a group is created.
         self.declare_parameter('min_group_age_before_split_sec', 8.0)
+
+        # Prevent split while the leader is far ahead but the follower chain is
+        # still forming. This is important for recursive groups.
+        self.declare_parameter('require_group_stable_before_split', True)
+        self.declare_parameter('max_pair_gap_for_split_m', 2.20)
+
+        # The robot that will become the relay must itself have moved far enough
+        # away from the parent relay. Otherwise the leader may trigger a split
+        # while the future relay is still too close to the previous relay.
+        self.declare_parameter('min_relay_progress_ratio', 0.65)
 
         # If true, groups with one robot still get role group_leader.
         self.declare_parameter('single_robot_groups_are_leaders', True)
@@ -95,6 +111,14 @@ class RelayTreeManager(Node):
         self.initial_heading_deg = float(
             self.get_parameter('initial_heading_deg').value
         )
+        self.relay_selection_mode = str(
+            self.get_parameter('relay_selection_mode').value
+        )
+        self.explicit_chain_order = [
+            str(name)
+            for name in list(self.get_parameter('explicit_chain_order').value)
+            if str(name)
+        ]
 
         self.split_distance_m = float(self.get_parameter('split_distance_m').value)
         self.branch_angle_deg = float(self.get_parameter('branch_angle_deg').value)
@@ -107,6 +131,15 @@ class RelayTreeManager(Node):
 
         self.min_group_age_before_split_sec = float(
             self.get_parameter('min_group_age_before_split_sec').value
+        )
+        self.require_group_stable_before_split = bool(
+            self.get_parameter('require_group_stable_before_split').value
+        )
+        self.max_pair_gap_for_split_m = float(
+            self.get_parameter('max_pair_gap_for_split_m').value
+        )
+        self.min_relay_progress_ratio = float(
+            self.get_parameter('min_relay_progress_ratio').value
         )
         self.single_robot_groups_are_leaders = bool(
             self.get_parameter('single_robot_groups_are_leaders').value
@@ -187,30 +220,33 @@ class RelayTreeManager(Node):
                 self._split_group(group)
 
     def _initialize_tree(self):
-        self.root_relay_name = self._choose_rearmost_robot(
+        ordered_names = self._order_names_for_relay_selection(
             self.robot_names,
             self.initial_leader_name,
             self.initial_heading_deg,
         )
 
-        if not self.root_relay_name:
+        if not ordered_names:
             return
 
+        self.root_relay_name = ordered_names[-1]
+
         moving_names = [
-            name for name in self.robot_names
+            name for name in ordered_names
             if name != self.root_relay_name
         ]
-        moving_names = self._sort_front_to_back(
-            moving_names,
-            self.initial_leader_name,
-            self.initial_heading_deg,
-        )
 
         if not moving_names:
             return
 
         if self.initial_leader_name in moving_names:
             leader_name = self.initial_leader_name
+            # Keep explicit chain order, but ensure the configured initial leader
+            # is at the front of group_0.
+            moving_names = [leader_name] + [
+                name for name in moving_names
+                if name != leader_name
+            ]
         else:
             leader_name = moving_names[0]
 
@@ -261,15 +297,82 @@ class RelayTreeManager(Node):
         if parent_relay is None or leader is None:
             return False
 
-        distance = math.hypot(
+        leader_distance = math.hypot(
             leader.x - parent_relay.x,
             leader.y - parent_relay.y,
         )
 
-        return distance >= self.split_distance_m
+        if leader_distance < self.split_distance_m:
+            return False
+
+        if self.require_group_stable_before_split:
+            stable, reason = self._group_stable_for_split(group)
+            if not stable:
+                self.get_logger().debug(
+                    f'[relay_tree_manager_recursive] waiting to split '
+                    f'{group.group_id}: {reason}'
+                )
+                return False
+
+        return True
+
+    def _group_stable_for_split(self, group: ActiveGroup):
+        sorted_names = self._order_names_for_relay_selection(
+            group.robot_names,
+            group.leader_name,
+            group.heading_deg,
+        )
+
+        if len(sorted_names) < self.min_group_size_to_split:
+            return False, 'not enough robots'
+
+        parent_relay = self.states.get(group.parent_relay_id)
+        if parent_relay is None:
+            return False, 'missing parent relay state'
+
+        # 1) Neighbor gaps in the current group must not be huge.
+        # This prevents splitting while the leader has run far ahead but
+        # followers are still forming the line.
+        worst_gap = 0.0
+        for a_name, b_name in zip(sorted_names[:-1], sorted_names[1:]):
+            a = self.states.get(a_name)
+            b = self.states.get(b_name)
+            if a is None or b is None:
+                return False, 'missing group robot state'
+
+            gap = math.hypot(a.x - b.x, a.y - b.y)
+            worst_gap = max(worst_gap, gap)
+
+        if worst_gap > self.max_pair_gap_for_split_m:
+            return (
+                False,
+                f'pair gap too large: {worst_gap:.2f}m > '
+                f'{self.max_pair_gap_for_split_m:.2f}m',
+            )
+
+        # 2) The rearmost robot, which will become the relay, must have made
+        # meaningful progress from the parent relay.
+        relay_candidate = self.states.get(sorted_names[-1])
+        if relay_candidate is None:
+            return False, 'missing relay candidate state'
+
+        relay_progress = math.hypot(
+            relay_candidate.x - parent_relay.x,
+            relay_candidate.y - parent_relay.y,
+        )
+        required_progress = self.split_distance_m * self.min_relay_progress_ratio
+
+        if relay_progress < required_progress:
+            return (
+                False,
+                f'relay candidate too close to parent: '
+                f'{relay_progress:.2f}m < {required_progress:.2f}m',
+            )
+
+        return True, 'stable'
 
     def _split_group(self, group: ActiveGroup):
-        sorted_names = self._sort_front_to_back(
+        sorted_names = self._order_names_for_relay_selection(
             group.robot_names,
             group.leader_name,
             group.heading_deg,
@@ -525,6 +628,50 @@ class RelayTreeManager(Node):
 
     def _have_required_states(self) -> bool:
         return all(name in self.states for name in self.robot_names)
+
+    def _order_names_for_relay_selection(
+        self,
+        names: List[str],
+        leader_name: str,
+        heading_deg: float,
+    ) -> List[str]:
+        """
+        Return names from front to back for relay decisions.
+
+        In 'chain_tail' mode, the tail of the assigned chain/group order becomes
+        the relay. This avoids geometry tie-breaking choosing robot8 instead of
+        robot9 in a 3x3 grid where several robots share the same rear x value.
+
+        In 'geometry' mode, keep the old projection-based behavior.
+        """
+        valid = [name for name in names if name in self.states]
+
+        if not valid:
+            return []
+
+        if self.relay_selection_mode == 'chain_tail':
+            # For the root group, explicit_chain_order comes from the launch.
+            # For child groups, group.robot_names already preserves the parent
+            # split ordering, so using names directly gives a deterministic tail.
+            if self.explicit_chain_order:
+                ordered = [
+                    name for name in self.explicit_chain_order
+                    if name in valid
+                ]
+                missing = [name for name in valid if name not in ordered]
+                ordered.extend(missing)
+            else:
+                ordered = list(valid)
+
+            if leader_name in ordered:
+                ordered = [leader_name] + [
+                    name for name in ordered
+                    if name != leader_name
+                ]
+
+            return ordered
+
+        return self._sort_front_to_back(valid, leader_name, heading_deg)
 
     def _choose_rearmost_robot(
         self,

@@ -44,6 +44,8 @@ setup(
             'leader_path_publisher = swarm_control.swarm.leader_path_publisher:main',
             'relay_tree_manager = swarm_control.swarm.relay_tree_manager:main',
             'relay_tree_visualizer = swarm_control.swarm.relay_tree_visualizer:main',
+            'relay_tree_evaluator = swarm_control.swarm.relay_tree_evaluator:main',
+            'mission_controller = swarm_control.coordination.mission_controller:main',
 
             'tree_explorer = swarm_control.exploration.tree_explorer:main',
             'breadcrumb_manager = swarm_control.exploration.breadcrumb_manager:main',

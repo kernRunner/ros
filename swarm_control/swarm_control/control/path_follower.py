@@ -42,7 +42,7 @@ class PathFollower(Node):
         self._init_state()
         self._init_ros_interfaces()
 
-        self.get_logger().info(f'[{self.robot_name}] simplified path_follower started')
+        self.get_logger().info(f'[{self.robot_name}] sequential path_follower started')
 
     # ------------------------------------------------------------------
     # Parameters
@@ -51,6 +51,7 @@ class PathFollower(Node):
     def _declare_parameters(self):
         self.declare_parameter('robot_name', 'robot2')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel_raw')
+        self.declare_parameter('mission_command_topic', '/swarm/mission_command')
 
         # Kept for launch-file compatibility. This simplified follower does not
         # subscribe to /swarm/leader_path.
@@ -80,7 +81,30 @@ class PathFollower(Node):
         # Old code used desired_follow_distance_m * 0.95, which made startup slow.
         self.declare_parameter('startup_gap_ratio', 0.60)
 
+        # Sequential startup:
+        # Followers do not all move at once. A robot may only start after the
+        # robots in front of it have opened spacing and are roughly aligned.
+        self.declare_parameter('sequential_start_enabled', True)
+        self.declare_parameter('sequential_slot_delay_sec', 0.8)
+        self.declare_parameter('sequential_front_pair_gap_ratio', 0.80)
+        self.declare_parameter('sequential_front_alignment_tolerance_rad', 0.70)
+        self.declare_parameter('sequential_self_alignment_tolerance_rad', 0.45)
+        self.declare_parameter('sequential_prealign_enabled', True)
+        self.declare_parameter('sequential_prealign_angular_gain', 0.65)
+
+        # Simple sequential release:
+        # follower i may only start after predecessor i-1 has actually moved
+        # this far from its initial position. This prevents all followers from
+        # releasing at once after the leader_start_delay_sec has elapsed.
+        self.declare_parameter('sequential_predecessor_move_m', 0.25)
+
         self.declare_parameter('lock_chain_order', True)
+
+        # In a compact grid spawn, projection-based ordering can change when the
+        # leader turns slightly. For stable launch behavior, use robot name order:
+        # robot1 -> robot2 -> robot3 -> ...
+        self.declare_parameter('chain_order_mode', 'robot_name')
+        self.declare_parameter('explicit_chain_order', [''])
 
         # Relay-tree mode: assignments from relay_tree_manager are enough to start.
         # Keep this False unless you explicitly want formation_manager to gate movement.
@@ -120,6 +144,7 @@ class PathFollower(Node):
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
+        self.mission_command_topic = self.get_parameter('mission_command_topic').value
 
         self.spawn_x = float(self.get_parameter('spawn_x').value)
         self.spawn_y = float(self.get_parameter('spawn_y').value)
@@ -148,7 +173,39 @@ class PathFollower(Node):
         self.catchup_speed_boost = float(self.get_parameter('catchup_speed_boost').value)
 
         self.startup_gap_ratio = float(self.get_parameter('startup_gap_ratio').value)
+
+        self.sequential_start_enabled = bool(
+            self.get_parameter('sequential_start_enabled').value
+        )
+        self.sequential_slot_delay_sec = float(
+            self.get_parameter('sequential_slot_delay_sec').value
+        )
+        self.sequential_front_pair_gap_ratio = float(
+            self.get_parameter('sequential_front_pair_gap_ratio').value
+        )
+        self.sequential_front_alignment_tolerance_rad = float(
+            self.get_parameter('sequential_front_alignment_tolerance_rad').value
+        )
+        self.sequential_self_alignment_tolerance_rad = float(
+            self.get_parameter('sequential_self_alignment_tolerance_rad').value
+        )
+        self.sequential_prealign_enabled = bool(
+            self.get_parameter('sequential_prealign_enabled').value
+        )
+        self.sequential_prealign_angular_gain = float(
+            self.get_parameter('sequential_prealign_angular_gain').value
+        )
+        self.sequential_predecessor_move_m = float(
+            self.get_parameter('sequential_predecessor_move_m').value
+        )
+
         self.lock_chain_order = bool(self.get_parameter('lock_chain_order').value)
+        self.chain_order_mode = str(self.get_parameter('chain_order_mode').value)
+        self.explicit_chain_order = [
+            str(name)
+            for name in list(self.get_parameter('explicit_chain_order').value)
+            if str(name)
+        ]
         self.require_formation_ready = bool(
             self.get_parameter('require_formation_ready').value
         )
@@ -192,6 +249,7 @@ class PathFollower(Node):
         self.is_leader = False
 
         self.other_robots: Dict[str, RobotState] = {}
+        self.initial_robot_positions: Dict[str, Tuple[float, float]] = {}
         self.locked_order: List[str] = []
         self.last_logged_order: List[str] = []
 
@@ -200,6 +258,16 @@ class PathFollower(Node):
         self.last_linear_cmd = 0.0
         self.last_angular_cmd = 0.0
 
+        # Mission command state:
+        #   explore     -> normal chain following
+        #   stop        -> full stop
+        #   return_home -> keep following leader while leader returns home
+        self.mission_mode = 'explore'
+        self.last_mission_log_ns = 0
+
+        self.group_join_ns = self.get_clock().now().nanoseconds
+        self.last_startup_wait_log_ns = 0
+
     def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.chain_order_pub = self.create_publisher(String, '/swarm/chain_order', 10)
@@ -207,12 +275,67 @@ class PathFollower(Node):
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.create_subscription(RobotState, '/swarm/robot_states', self.state_callback, 10)
         self.create_subscription(Bool, 'formation_ready', self.formation_ready_cb, 10)
+        self.create_subscription(String, self.mission_command_topic, self.mission_command_callback, 10)
 
         self.create_timer(0.1, self.control_loop)
 
     # ------------------------------------------------------------------
     # Callbacks
     # ------------------------------------------------------------------
+
+    def mission_command_callback(self, msg: String):
+        """
+        Accept plain text:
+          explore
+          stop
+          return_home
+
+        or small JSON:
+          {"mode":"explore"}
+          {"mode":"stop"}
+          {"mode":"return_home"}
+        """
+        raw = (msg.data or '').strip()
+
+        if not raw:
+            return
+
+        mode = raw
+
+        if raw.startswith('{'):
+            lowered = raw.lower()
+            if '"stop"' in lowered or "'stop'" in lowered:
+                mode = 'stop'
+            elif '"return_home"' in lowered or "'return_home'" in lowered:
+                mode = 'return_home'
+            elif '"explore"' in lowered or "'explore'" in lowered:
+                mode = 'explore'
+
+        mode = mode.strip().lower()
+
+        if mode not in ('explore', 'stop', 'return_home'):
+            self.get_logger().warn(
+                f'[{self.robot_name}] ignoring unknown mission mode: {raw}'
+            )
+            return
+
+        if mode == self.mission_mode:
+            return
+
+        self.mission_mode = mode
+
+        # Important: clear smoothing memory so stop is immediate.
+        if mode == 'stop':
+            self.last_linear_cmd = 0.0
+            self.last_angular_cmd = 0.0
+            self.publish_cmd(0.0, 0.0)
+
+        # On resume, require sequential release again only if this robot has not
+        # previously been released. Do not reset startup_released here because
+        # that would unnecessarily rebuild the whole chain.
+        self.get_logger().warn(
+            f'[{self.robot_name}] mission mode changed to {self.mission_mode}'
+        )
 
     def odom_callback(self, msg: Odometry):
         # Fallback only, before /swarm/robot_states for this robot arrives.
@@ -225,6 +348,9 @@ class PathFollower(Node):
 
     def state_callback(self, msg: RobotState):
         self.other_robots[msg.robot_name] = msg
+
+        if msg.robot_name not in self.initial_robot_positions:
+            self.initial_robot_positions[msg.robot_name] = (msg.x, msg.y)
 
         if msg.robot_name != self.robot_name:
             return
@@ -291,6 +417,7 @@ class PathFollower(Node):
         self.last_logged_order = []
         self.formation_done = False
         self.startup_released = False
+        self.group_join_ns = self.get_clock().now().nanoseconds
         self.get_logger().info(
             f'[{self.robot_name}] leader changed: {old_leader} -> {new_leader}'
         )
@@ -302,6 +429,13 @@ class PathFollower(Node):
     def control_loop(self):
         if not self.have_self_state:
             self.publish_cmd(0.0, 0.0)
+            return
+
+        if self.mission_mode == 'stop':
+            self.last_linear_cmd = 0.0
+            self.last_angular_cmd = 0.0
+            self.publish_cmd(0.0, 0.0)
+            self._log_mission_hold()
             return
 
         # Relays are physical breadcrumbs: always stay stopped.
@@ -324,7 +458,7 @@ class PathFollower(Node):
 
         order = self.get_chain_order()
 
-        if self.robot_name not in order:
+        if not order or self.robot_name not in order:
             self.publish_cmd(0.0, 0.0)
             return
 
@@ -336,8 +470,9 @@ class PathFollower(Node):
             self.publish_cmd(0.0, 0.0)
             return
 
-        if not self.startup_space_available(predecessor):
-            self.publish_cmd(0.0, 0.0)
+        released, wait_cmd = self.startup_release_allowed(order, predecessor)
+        if not released:
+            self.publish_cmd(*wait_cmd)
             return
 
         guard = self.predecessor_guard(predecessor)
@@ -360,6 +495,18 @@ class PathFollower(Node):
 
         self.publish_cmd(linear, angular)
 
+    def _log_mission_hold(self):
+        now_ns = self.get_clock().now().nanoseconds
+
+        if now_ns - self.last_mission_log_ns < 3_000_000_000:
+            return
+
+        self.last_mission_log_ns = now_ns
+        self.get_logger().info(
+            f'[{self.robot_name}] path follower holding due to mission mode: '
+            f'{self.mission_mode}'
+        )
+
     # ------------------------------------------------------------------
     # Chain order
     # ------------------------------------------------------------------
@@ -368,12 +515,93 @@ class PathFollower(Node):
         if self.lock_chain_order and self.locked_order:
             return self.locked_order
 
-        order = self.compute_physical_chain_order()
+        if self.chain_order_mode == 'explicit':
+            order = self.compute_explicit_chain_order()
+        elif self.chain_order_mode == 'robot_name':
+            order = self.compute_robot_name_chain_order()
+        else:
+            order = self.compute_physical_chain_order()
 
-        if order:
-            self._log_order(order, locked=False)
+        if not order:
+            return []
 
+        self._log_order(order, locked=False)
         return order
+
+    def compute_explicit_chain_order(self) -> List[str]:
+        leader_name = self.current_leader_id
+
+        if not leader_name:
+            return []
+
+        valid_names = set()
+        for robot in self.other_robots.values():
+            if (
+                robot.active
+                and robot.group_id == self.group_id
+                and not robot.is_relay
+                and robot.role not in ('root_relay', 'relay')
+                and (
+                    robot.leader_id == leader_name
+                    or robot.robot_name == leader_name
+                )
+            ):
+                valid_names.add(robot.robot_name)
+
+        if not valid_names:
+            return []
+
+        # Preserve the explicit order from the launch, but only keep robots
+        # currently belonging to this active group.
+        ordered = [
+            name for name in self.explicit_chain_order
+            if name in valid_names
+        ]
+
+        # Safety fallback: include any group robot missing from the explicit list.
+        missing = sorted(
+            list(valid_names - set(ordered)),
+            key=self.robot_number,
+        )
+        ordered.extend(missing)
+
+        if leader_name in ordered:
+            ordered.remove(leader_name)
+
+        return [leader_name] + ordered
+
+    def compute_robot_name_chain_order(self) -> List[str]:
+        leader_name = self.current_leader_id
+
+        if not leader_name:
+            return []
+
+        robots = [
+            r for r in self.other_robots.values()
+            if (
+                r.active
+                and r.group_id == self.group_id
+                and not r.is_relay
+                and r.role not in ('root_relay', 'relay')
+                and (
+                    r.leader_id == leader_name
+                    or r.robot_name == leader_name
+                )
+            )
+        ]
+
+        if not robots:
+            return []
+
+        names = sorted(
+            [r.robot_name for r in robots],
+            key=self.robot_number,
+        )
+
+        if leader_name in names:
+            names.remove(leader_name)
+
+        return [leader_name] + names
 
     def compute_physical_chain_order(self) -> List[str]:
         leader_name = self.current_leader_id
@@ -428,7 +656,7 @@ class PathFollower(Node):
     def get_predecessor(self) -> Optional[RobotState]:
         order = self.get_chain_order()
 
-        if self.robot_name not in order:
+        if not order or self.robot_name not in order:
             return None
 
         index = order.index(self.robot_name)
@@ -478,6 +706,172 @@ class PathFollower(Node):
     # ------------------------------------------------------------------
     # Startup release
     # ------------------------------------------------------------------
+
+    def startup_release_allowed(
+        self,
+        order: List[str],
+        predecessor: RobotState,
+    ) -> Tuple[bool, Tuple[float, float]]:
+        """
+        Gate startup so the chain forms one robot at a time.
+
+        Important change:
+          Do NOT use only absolute slot delay from node startup. With a delayed
+          leader, all slot delays expire before robot1 starts, so every follower
+          releases together.
+
+        New simple rule:
+          robot i starts only after its predecessor has physically moved a small
+          distance from its initial spawn/assignment position. This creates:
+            robot1 moves -> robot2 moves -> robot3 moves -> robot6 moves -> ...
+        """
+        if self.startup_released:
+            return True, (0.0, 0.0)
+
+        if not self.sequential_start_enabled:
+            return self.startup_space_available(predecessor), (0.0, 0.0)
+
+        if self.robot_name not in order:
+            return False, (0.0, 0.0)
+
+        my_index = order.index(self.robot_name)
+
+        if my_index <= 0:
+            self.startup_released = True
+            return True, (0.0, 0.0)
+
+        # The key gate: wait until the predecessor has actually moved.
+        moved, moved_dist = self.predecessor_has_moved(predecessor)
+        if not moved:
+            self._log_startup_wait(
+                f'waiting {predecessor.robot_name} moved '
+                f'{moved_dist:.2f}/{self.sequential_predecessor_move_m:.2f}m'
+            )
+            return False, (0.0, 0.0)
+
+        # Small per-slot delay after predecessor movement condition is true.
+        # This avoids identical release on the same timer tick, but does not
+        # dominate behavior.
+        now_ns = self.get_clock().now().nanoseconds
+        elapsed_sec = (now_ns - self.group_join_ns) / 1e9
+        required_delay = min(my_index * self.sequential_slot_delay_sec, 1.5)
+
+        if elapsed_sec < required_delay:
+            self._log_startup_wait(
+                f'waiting slot delay {elapsed_sec:.1f}/{required_delay:.1f}s'
+            )
+            return False, (0.0, 0.0)
+
+        gap = math.hypot(
+            predecessor.x - self.world_x,
+            predecessor.y - self.world_y,
+        )
+        required_gap = self.desired_follow_distance_m * self.startup_gap_ratio
+
+        if gap < required_gap:
+            self._log_startup_wait(
+                f'waiting gap to {predecessor.robot_name}: '
+                f'{gap:.2f}/{required_gap:.2f}m'
+            )
+            return False, (0.0, 0.0)
+
+        # Optional prealignment. For the 3x3 S-order spawn this should usually
+        # stay disabled in the launch to avoid rotation deadlocks.
+        if self.sequential_prealign_enabled:
+            aligned, angular = self.self_aligned_for_start(predecessor)
+            if not aligned:
+                self._log_startup_wait(f'pre-aligning behind {predecessor.robot_name}')
+                return False, (0.0, angular)
+
+        self.startup_released = True
+        self.get_logger().info(
+            f'[{self.robot_name}] sequential startup released: '
+            f'slot={my_index}, predecessor={predecessor.robot_name}, '
+            f'predecessor_moved={moved_dist:.2f}m, gap={gap:.2f}m'
+        )
+        return True, (0.0, 0.0)
+
+    def predecessor_has_moved(self, predecessor: RobotState) -> Tuple[bool, float]:
+        start = self.initial_robot_positions.get(predecessor.robot_name)
+
+        if start is None:
+            return False, 0.0
+
+        sx, sy = start
+        moved_dist = math.hypot(predecessor.x - sx, predecessor.y - sy)
+
+        return moved_dist >= self.sequential_predecessor_move_m, moved_dist
+
+    def front_chain_ready_for_my_turn(
+        self,
+        order: List[str],
+        my_index: int,
+    ) -> Tuple[bool, str]:
+        """
+        Check only the chain in front of this robot.
+
+        For robot4, this checks robot1-robot2 and robot2-robot3.
+        robot4 remains still until those pairs are reasonably spaced/aligned.
+        """
+        required_gap = (
+            self.desired_follow_distance_m
+            * self.sequential_front_pair_gap_ratio
+        )
+
+        for j in range(1, my_index):
+            front_name = order[j - 1]
+            back_name = order[j]
+
+            front = self.other_robots.get(front_name)
+            back = self.other_robots.get(back_name)
+
+            if front is None or back is None:
+                return False, f'waiting state for {front_name}/{back_name}'
+
+            gap = math.hypot(front.x - back.x, front.y - back.y)
+            if gap < required_gap:
+                return (
+                    False,
+                    f'waiting front pair gap {front_name}->{back_name}: '
+                    f'{gap:.2f}/{required_gap:.2f}m',
+                )
+
+            yaw_error = abs(normalize_angle(front.yaw - back.yaw))
+            if yaw_error > self.sequential_front_alignment_tolerance_rad:
+                return (
+                    False,
+                    f'waiting front pair align {front_name}->{back_name}: '
+                    f'{yaw_error:.2f}rad',
+                )
+
+        return True, 'front chain ready'
+
+    def self_aligned_for_start(
+        self,
+        predecessor: RobotState,
+    ) -> Tuple[bool, float]:
+        # Desired target slot behind predecessor, along predecessor heading.
+        tx = predecessor.x - self.desired_follow_distance_m * math.cos(predecessor.yaw)
+        ty = predecessor.y - self.desired_follow_distance_m * math.sin(predecessor.yaw)
+
+        desired_heading = math.atan2(ty - self.world_y, tx - self.world_x)
+        heading_error = normalize_angle(desired_heading - self.yaw)
+
+        aligned = abs(heading_error) <= self.sequential_self_alignment_tolerance_rad
+        angular = self.sequential_prealign_angular_gain * heading_error
+        angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+
+        return aligned, angular
+
+    def _log_startup_wait(self, reason: str):
+        now_ns = self.get_clock().now().nanoseconds
+
+        # Throttle, otherwise startup gating can spam logs.
+        if now_ns - self.last_startup_wait_log_ns < 2_000_000_000:
+            return
+
+        self.last_startup_wait_log_ns = now_ns
+        self.get_logger().info(f'[{self.robot_name}] sequential startup: {reason}')
 
     def startup_space_available(self, predecessor: RobotState) -> bool:
         """
