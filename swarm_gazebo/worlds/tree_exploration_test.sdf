@@ -1,10 +1,13 @@
 <?xml version="1.0" ?>
+
 <sdf version="1.8">
   <world name="tree_exploration_test">
 
+    <gravity>0 0 -3.711</gravity>
+
     <physics name="stable_physics" type="ignored">
       <max_step_size>0.003</max_step_size>
-      <real_time_factor>3.0</real_time_factor>
+      <real_time_factor>1.0</real_time_factor>
     </physics>
 
     <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
@@ -14,114 +17,89 @@
       <render_engine>ogre2</render_engine>
     </plugin>
 
-    <light name="low_sun" type="directional">
-      <cast_shadows>true</cast_shadows>
-      <pose>0 0 20 0 0 0</pose>
-      <diffuse>0.95 0.86 0.72 1</diffuse>
-      <specular>0.15 0.12 0.10 1</specular>
-      <direction>-0.85 0.25 -0.45</direction>
+    <scene>
+      <ambient>0.35 0.25 0.18 1</ambient>
+      <background>0.72 0.52 0.39 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <!-- Omnidirectional light moved back -->
+    <light name="mars_back_light" type="point">
+      <cast_shadows>false</cast_shadows>
+
+      <!-- very far back -->
+      <pose>-500 0 50 0 0 0</pose>
+
+      <diffuse>1.0 0.78 0.55 1</diffuse>
+      <specular>0.02 0.02 0.02 1</specular>
+
+      <attenuation>
+        <range>2000</range>
+        <constant>0.005</constant>
+        <linear>0.00001</linear>
+        <quadratic>0.00000001</quadratic>
+      </attenuation>
     </light>
 
-    <!-- Large open regolith ground: 200 m x 200 m -->
-    <model name="regolith_ground">
+    <!-- Mars terrain model: stable STL visual fallback -->
+    <model name="mars_gale_crater_patch1">
       <static>true</static>
+
       <link name="link">
+
         <collision name="collision">
           <geometry>
-            <plane>
-              <normal>0 0 1</normal>
-              <size>200 200</size>
-            </plane>
+            <mesh>
+              <uri>model://mars_gale_crater_patch1/meshes/gale_crater_patch1.stl</uri>
+            </mesh>
           </geometry>
         </collision>
+
         <visual name="visual">
+          <cast_shadows>true</cast_shadows>
+
           <geometry>
-            <plane>
-              <normal>0 0 1</normal>
-              <size>200 200</size>
-            </plane>
+            <mesh>
+              <uri>model://mars_gale_crater_patch1/meshes/gale_crater_visual.dae</uri>
+            </mesh>
           </geometry>
+
           <material>
-            <ambient>0.55 0.43 0.34 1</ambient>
-            <diffuse>0.65 0.50 0.38 1</diffuse>
-            <specular>0.05 0.04 0.03 1</specular>
+            <ambient>0.55 0.38 0.28 1</ambient>
+            <diffuse>0.85 0.62 0.45 1</diffuse>
+            <specular>0 0 0 1</specular>
+
+
+          <pbr>
+            <metal>
+              <albedo_map>model://mars_gale_crater_patch1/materials/textures/red_laterite_soil_stones_diff_4k.png</albedo_map>
+              <normal_map>model://mars_gale_crater_patch1/materials/textures/red_laterite_soil_stones_nor_dx_4k.png</normal_map>
+              <roughness_map>model://mars_gale_crater_patch1/materials/textures/red_laterite_soil_stones_rough_4k.png</roughness_map>
+              <roughness>1.0</roughness>
+              <metalness>0.0</metalness>
+            </metal>
+          </pbr>
+
+
           </material>
         </visual>
+
+
       </link>
     </model>
 
-    <!-- 180 m x 180 m open boundary. No internal obstacles. -->
-    <model name="boundary_north">
-      <static>true</static>
-      <pose>0 90 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>180 0.25 1</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>180 0.25 1</size></box></geometry>
-          <material>
-            <ambient>0.22 0.18 0.15 1</ambient>
-            <diffuse>0.32 0.25 0.20 1</diffuse>
-            <specular>0.04 0.03 0.02 1</specular>
-          </material>
-        </visual>
-      </link>
-    </model>
+    <!-- Rock / obstacle field -->
+    <include>
+      <uri>model://mars_rock_field</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
 
-    <model name="boundary_south">
-      <static>true</static>
-      <pose>0 -90 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>180 0.25 1</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>180 0.25 1</size></box></geometry>
-          <material>
-            <ambient>0.22 0.18 0.15 1</ambient>
-            <diffuse>0.32 0.25 0.20 1</diffuse>
-            <specular>0.04 0.03 0.02 1</specular>
-          </material>
-        </visual>
-      </link>
-    </model>
+    <!-- Sky dome background, rotated 180 degrees -->
+    <include>
+      <uri>model://mars_sky_dome</uri>
+      <pose>0 0 0 0 0 1.5708</pose>
+    </include>
 
-    <model name="boundary_east">
-      <static>true</static>
-      <pose>90 0 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.25 180 1</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.25 180 1</size></box></geometry>
-          <material>
-            <ambient>0.22 0.18 0.15 1</ambient>
-            <diffuse>0.32 0.25 0.20 1</diffuse>
-            <specular>0.04 0.03 0.02 1</specular>
-          </material>
-        </visual>
-      </link>
-    </model>
-
-    <model name="boundary_west">
-      <static>true</static>
-      <pose>-90 0 0.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.25 180 1</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.25 180 1</size></box></geometry>
-          <material>
-            <ambient>0.22 0.18 0.15 1</ambient>
-            <diffuse>0.32 0.25 0.20 1</diffuse>
-            <specular>0.04 0.03 0.02 1</specular>
-          </material>
-        </visual>
-      </link>
-    </model>
 
   </world>
 </sdf>

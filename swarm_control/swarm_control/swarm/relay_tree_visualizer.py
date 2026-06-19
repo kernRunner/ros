@@ -231,8 +231,8 @@ class RelayTreeVisualizer(Node):
         marker.ns = namespace
         marker.id = marker_id
         marker.action = Marker.ADD
-        marker.lifetime.sec = 0
-        marker.lifetime.nanosec = 500_000_000
+        marker.lifetime.sec = 3
+        marker.lifetime.nanosec = 0
         return marker
 
     def _robot_marker(self, marker_id: int, state: RobotState, now) -> Marker:
@@ -264,11 +264,20 @@ class RelayTreeVisualizer(Node):
         marker.scale.z = self.text_height
         marker.color = self._color_white()
 
-        marker.text = (
-            f'{state.robot_name}\n'
-            f'{state.role}\n'
-            f'{state.group_id}'
-        )
+        tree_id = self.tree_id_for_robot(state.robot_name)
+        short_name = state.robot_name.replace('robot', 'r')
+
+        role_short = {
+            'root_relay': 'ROOT',
+            'relay': 'R',
+            'group_leader': 'L',
+            'leader': 'L',
+            'group_follower': 'F',
+            'follower': 'F',
+            'idle': 'I',
+        }.get(state.role, state.role)
+
+        marker.text = f'{short_name} {role_short} {tree_id}'
 
         return marker
 
@@ -347,6 +356,16 @@ class RelayTreeVisualizer(Node):
         match = re.search(r'\d+', name)
         return int(match.group()) if match else 999
 
+    def tree_id_for_robot(self, name: str) -> str:
+        number = self.robot_number(name)
+
+        if 1 <= number <= 9:
+            return 'A'
+
+        if 10 <= number <= 18:
+            return 'B'
+
+        return '?'
 
 def main(args=None):
     rclpy.init(args=args)
