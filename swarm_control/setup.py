@@ -45,7 +45,13 @@ setup(
             'relay_tree_manager = swarm_control.swarm.relay_tree_manager:main',
             'relay_tree_visualizer = swarm_control.swarm.relay_tree_visualizer:main',
             'relay_tree_evaluator = swarm_control.swarm.relay_tree_evaluator:main',
+
             'mission_controller = swarm_control.coordination.mission_controller:main',
+            'mock_relay_tree_simulator = swarm_control.coordination.mock_relay_tree_simulator:main',
+            'mock_single_root_three_branches = swarm_control.coordination.mock_single_root_three_branches:main',
+            'mock_single_root_four_branches = swarm_control.coordination.mock_single_root_four_branches:main',
+            'mock_single_root_four_branches_splitting = swarm_control.coordination.mock_single_root_four_branches_splitting:main',
+            'mock_single_root_four_branches_8robots = swarm_control.coordination.mock_single_root_four_branches_8robots:main',
 
             'tree_explorer = swarm_control.exploration.tree_explorer:main',
             'breadcrumb_manager = swarm_control.exploration.breadcrumb_manager:main',

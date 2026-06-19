@@ -1,0 +1,17 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <model name="mars_rock_field">
+    <static>true</static>
+
+    <!--
+      Sparse Mars rock field.
+      Uses the textures you copied into:
+        models/mars_rock_field/materials/textures/
+
+      The origin area is intentionally clear for your 2x2 robot spawn.
+      Rock positions are relative to the world because this model is included at pose 0 0 0.
+    -->
+
+
+  </model>
+</sdf>
