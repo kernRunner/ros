@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+swarm_gazebo/models/meshes/swarm_robot_complete.obj
 
 # Large Gazebo assets, kept locally only
 swarm_gazebo/models/mars_gale_crater_patch1/materials/textures/*_4k.png

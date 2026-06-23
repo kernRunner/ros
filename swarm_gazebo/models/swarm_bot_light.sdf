@@ -32,18 +32,15 @@
 
       <visual name="visual_body">
         <geometry>
-          <box>
-            <size>0.30 0.20 0.06</size>
-          </box>
+          <mesh>
+            <uri>model://meshes/swarm_robot_complete.obj</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
         </geometry>
-        <material>
-          <ambient>0.20 0.20 0.25 1</ambient>
-          <diffuse>0.25 0.25 0.30 1</diffuse>
-          <specular>0.05 0.05 0.05 1</specular>
-        </material>
       </visual>
 
-      <!-- Small front marker only, so robot yaw/front direction is still visible. -->
+      <!--
+       Small front marker only, so robot yaw/front direction is still visible. 
       <visual name="front_marker">
         <pose>0.145 0 0.095 0 0 0</pose>
         <geometry>
@@ -56,7 +53,7 @@
           <diffuse>1.00 0.10 0.10 1</diffuse>
         </material>
       </visual>
-
+      
       <visual name="lidar_visual">
         <pose>0 0 0.135 0 0 0</pose>
         <geometry>
@@ -71,6 +68,9 @@
           <specular>0.10 0.10 0.10 1</specular>
         </material>
       </visual>
+
+
+      -->
 
       <sensor name="lidar" type="gpu_lidar">
         <pose>0 0 0.135 0 0 0</pose>
@@ -124,6 +124,9 @@
           </friction>
         </surface>
       </collision>
+      
+      <!--
+      
       <visual name="visual">
         <geometry>
           <cylinder>
@@ -137,6 +140,7 @@
           <specular>0.05 0.05 0.05 1</specular>
         </material>
       </visual>
+      -->
     </link>
 
     <link name="right_wheel">
@@ -168,6 +172,9 @@
           </friction>
         </surface>
       </collision>
+
+      <!--
+      
       <visual name="visual">
         <geometry>
           <cylinder>
@@ -181,6 +188,8 @@
           <specular>0.05 0.05 0.05 1</specular>
         </material>
       </visual>
+      -->
+
     </link>
 
     <joint name="left_wheel_joint" type="revolute">
