@@ -73,6 +73,7 @@ class RelayTreeManager(Node):
         )
         self.declare_parameter('initial_leader_name', 'robot1')
         self.declare_parameter('initial_heading_deg', 0.0)
+        self.declare_parameter('role_assignment_topic', '/swarm/role_assignments')
 
         # Relay selection:
         # - 'geometry': old behavior, choose rearmost by projection along heading
@@ -110,6 +111,9 @@ class RelayTreeManager(Node):
         )
         self.initial_heading_deg = float(
             self.get_parameter('initial_heading_deg').value
+        )
+        self.role_assignment_topic = str(
+            self.get_parameter('role_assignment_topic').value
         )
         self.relay_selection_mode = str(
             self.get_parameter('relay_selection_mode').value
@@ -171,8 +175,11 @@ class RelayTreeManager(Node):
     def _init_ros_interfaces(self):
         self.assignment_pub = self.create_publisher(
             String,
-            '/swarm/role_assignments',
+            self.role_assignment_topic,
             10,
+        )
+        self.get_logger().info(
+            f'[relay_tree_manager_recursive] publishing assignments on {self.role_assignment_topic}'
         )
         self.create_subscription(
             RobotState,
