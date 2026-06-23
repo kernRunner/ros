@@ -143,11 +143,17 @@ class RelayTreeEvaluator(Node):
             elif state.role == 'relay':
                 relays.append(name)
             elif state.role == 'group_leader':
-                active_groups.setdefault(state.group_id, []).append(name)
-                leaders[state.group_id] = name
+                tree_id = self.tree_id_for_robot(name)
+                gid = f'{tree_id}/{state.group_id}'
+
+                active_groups.setdefault(gid, []).append(name)
+                leaders[gid] = name
             elif state.role == 'group_follower':
-                active_groups.setdefault(state.group_id, []).append(name)
-                followers.setdefault(state.group_id, []).append(name)
+                tree_id = self.tree_id_for_robot(name)
+                gid = f'{tree_id}/{state.group_id}'
+
+                active_groups.setdefault(gid, []).append(name)
+                followers.setdefault(gid, []).append(name)
 
         relay_links = self.compute_relay_links(states, leaders)
 
@@ -212,6 +218,17 @@ class RelayTreeEvaluator(Node):
 
         links.sort(key=lambda x: x['group_id'])
         return links
+
+    def tree_id_for_robot(self, name: str) -> str:
+        number = self.robot_number(name)
+
+        if 1 <= number <= 9:
+            return 'A'
+
+        if 10 <= number <= 18:
+            return 'B'
+
+        return '?'
 
     def detect_events(self, states: Dict[str, RobotState], elapsed_sec: float, summary: dict):
         current_relays = set(summary['relays'])
