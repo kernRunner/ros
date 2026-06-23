@@ -69,7 +69,7 @@ def generate_launch_description():
             launch_arguments={'gz_args': f'-r {world_file}'}.items()
     
     # Alternative Gazebo startup method for WSL environments (tested on WSL2 + ROS2 Humble).
-    # If you want to use it, un comment from line 47-53 and comment lines 37-42
+    # If you want to use it, un comment from line 60-65 and comment lines 50-55
     
     #actions.append(
     #    ExecuteProcess(
