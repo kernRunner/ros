@@ -44,15 +44,11 @@
       <!-- Main centered chassis body -->
       <visual name="visual_body">
         <geometry>
-          <box>
-            <size>0.30 0.20 0.06</size>
-          </box>
+          <mesh>
+            <uri>model://meshes/swarm_robot_complete.obj</uri>
+            <size>0.001 0.001 0.001</size>
+          </mesh>
         </geometry>
-        <material>
-          <ambient>0.20 0.20 0.25 1</ambient>
-          <diffuse>0.25 0.25 0.30 1</diffuse>
-          <specular>0.10 0.10 0.10 1</specular>
-        </material>
       </visual>
 
       <!-- Exact controller/odom origin marker -->

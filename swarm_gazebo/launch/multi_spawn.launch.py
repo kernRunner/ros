@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction, SetEnvironmentVariable
+from launch.actions import IncludeLaunchDescription, TimerAction, SetEnvironmentVariable, ExecuteProcess
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -58,6 +58,28 @@ def generate_launch_description():
 
     actions = []
 
+    # ------------------------------------------------------------
+    # Start Gazebo
+    # ------------------------------------------------------------
+    actions.append(
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(ros_gz_sim_pkg, 'launch', 'gz_sim.launch.py')
+            ),
+            launch_arguments={'gz_args': f'-r {world_file}'}.items()
+    
+    # Alternative Gazebo startup method for WSL environments (tested on WSL2 + ROS2 Humble).
+    # If you want to use it, un comment from line 47-53 and comment lines 37-42
+    
+    #actions.append(
+    #    ExecuteProcess(
+    #        cmd=['ign', 'gazebo', world_file],
+    #        output='screen',
+    #        additional_env={
+    #            'LIBGL_ALWAYS_SOFTWARE': '1'
+    #        }
+        )
+    )
     resource_paths = [
         os.path.join(gazebo_pkg, 'models'),
         os.path.join(gazebo_pkg, 'worlds'),
