@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+swarm_gazebo/models/meshes/swarm_robot_complete.obj
