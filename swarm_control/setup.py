@@ -54,6 +54,7 @@ setup(
             'mock_single_root_four_branches_8robots = swarm_control.coordination.mock_single_root_four_branches_8robots:main',
 
             'tree_explorer = swarm_control.exploration.tree_explorer:main',
+            'terrain_scan_filter = swarm_control.exploration.terrain_scan_filter:main',
             'breadcrumb_manager = swarm_control.exploration.breadcrumb_manager:main',
             'line_alignment_monitor = swarm_control.swarm.line_alignment_monitor:main',
             'gazebo_pose_bridge = swarm_control.control.gazebo_pose_bridge:main',
