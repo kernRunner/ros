@@ -7,23 +7,33 @@ import os
 
 
 def compact_group(start_id, cx, cy):
-    # Four robots in a compact 2x2 formation.
+    # Spawn robots above uneven terrain so they do not start inside the map.
+    # They will fall down onto the collision mesh.
+    spawn_z = 0.15
+
     pts = [
-        (0.9, 0.45),
-        (0.9, -0.45),
-        (-0.9, 0.45),
-        (-0.9, -0.45),
+        (0.70, 0.70),
+        (0.70, 0.00),
+        (0.70, -0.70),
+
+        (0.00, 0.70),
+        (0.00, 0.00),
+        (0.00, -0.70),
+
+        (-0.70, 0.70),
+        (-0.70, 0.00),
+        (-0.70, -0.70),
     ]
+
     return [
         {
             'name': f'robot{start_id + i}',
             'x': str(cx + x),
             'y': str(cy + y),
-            'z': '0.0',
+            'z': str(spawn_z),
         }
         for i, (x, y) in enumerate(pts)
     ]
-
 
 def later(t, action):
     return TimerAction(period=t, actions=[action])
@@ -45,7 +55,11 @@ def generate_launch_description():
     #
     # We keep the relay-tree, swarm_member, path_follower, and tree_explorer logic.
     # Only the number of robots is reduced.
-    group_a = ['robot1', 'robot2', 'robot3', 'robot4']
+    group_a = [
+        'robot1', 'robot2', 'robot3',
+        'robot4', 'robot5', 'robot6',
+        'robot7', 'robot8', 'robot9',
+    ]
 
     robots = compact_group(1, 0.0, 0.0)
     active = group_a
@@ -270,6 +284,9 @@ def generate_launch_description():
 
                 f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan'
                 '@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+
+                f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points'
+                '@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             ],
             remappings=[
                 (f'/model/{ns}/cmd_vel', 'cmd_vel'),
@@ -277,7 +294,11 @@ def generate_launch_description():
 
                 (
                     f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan',
-                    'scan',
+                    'scan_2d',
+                ),
+                (
+                    f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points',
+                    'points',
                 ),
             ],
         )))
@@ -366,7 +387,27 @@ def generate_launch_description():
             ],
         )))
 
-        actions.append(later(d + 0.75, Node(
+        actions.append(later(d + 0.65, Node(
+            package='swarm_control',
+            executable='terrain_scan_filter',
+            namespace=ns,
+            name='terrain_scan_filter',
+            output='screen',
+            parameters=[
+                {'use_sim_time': True},
+                {'robot_name': ns},
+                {'active_only_when_leader': True},
+                {'pointcloud_topic': 'points'},
+                {'scan_topic': 'scan'},
+                {'range_min': 0.25},
+                {'range_max': 7.0},
+                {'num_ranges': 90},
+                {'min_obstacle_height': -0.02},
+                {'max_obstacle_height': 0.70},
+            ],
+        )))
+
+        actions.append(later(d + 0.95, Node(
             package='swarm_control',
             executable='tree_explorer',
             namespace=ns,
@@ -379,10 +420,11 @@ def generate_launch_description():
                 {'mission_command_topic': '/swarm/mission_mode'},
                 {'forward_speed': 0.08},
                 {'turn_speed': 0.30},
+                {'front_blocked_distance': 0.85},
                 {'obstacle_escape_enabled': True},
                 {'chain_spacing_m': 1.15},
                 {'formation_tolerance_m': 0.35},
-                {'leader_start_delay_sec': 10.0},
+                {'leader_start_delay_sec': 2.0},
                 {'leader_wait_for_chain': False},
                 {'leader_slow_chain_gap_m': 2.00},
                 {'leader_max_chain_gap_m': 2.80},

@@ -1,17 +1,23 @@
 <model name="mars_gale_crater_patch1">
   <static>true</static>
 
+  <!-- This moves BOTH collision and visual together -->
+  <pose>0 0 0 0 0 0</pose>
+
   <link name="link">
+    <pose>0 0 0 0 0 0</pose>
 
     <collision name="collision">
+      <pose>0 0 0 0 0 0</pose>
       <geometry>
         <mesh>
-          <uri>model://mars_gale_crater_patch1/meshes/gale_crater_patch1.stl</uri>
+          <uri>model://mars_gale_crater_patch1/meshes/gale_crater_patch_final.stl</uri>
         </mesh>
       </geometry>
     </collision>
 
     <visual name="visual">
+      <pose>0 0 0 0 0 0</pose>
       <cast_shadows>true</cast_shadows>
 
       <geometry>
