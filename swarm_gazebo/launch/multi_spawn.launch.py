@@ -75,26 +75,9 @@ def generate_launch_description():
     # ------------------------------------------------------------
     # Start Gazebo
     # ------------------------------------------------------------
-    actions.append(
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                os.path.join(ros_gz_sim_pkg, 'launch', 'gz_sim.launch.py')
-            ),
-            launch_arguments={'gz_args': f'-r {world_file}'}.items()
-    
-    # Alternative Gazebo startup method for WSL environments (tested on WSL2 + ROS2 Humble).
-    # If you want to use it, un comment from line 60-65 and comment lines 50-55
-    
-    #actions.append(
-    #    ExecuteProcess(
-    #        cmd=['ign', 'gazebo', world_file],
-    #        output='screen',
-    #        additional_env={
-    #            'LIBGL_ALWAYS_SOFTWARE': '1'
-    #        }
-        )
-    )
+
     resource_paths = [
+        gazebo_pkg,
         os.path.join(gazebo_pkg, 'models'),
         os.path.join(gazebo_pkg, 'worlds'),
     ]
@@ -123,7 +106,9 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(ros_gz_sim_pkg, 'launch', 'gz_sim.launch.py')
         ),
-        launch_arguments={'gz_args': f'-r {world_file}'}.items(),
+        launch_arguments={
+            'gz_args': f'-r --render-engine ogre "{world_file}"'
+        }.items(),
     ))
 
     actions.append(Node(
@@ -285,8 +270,8 @@ def generate_launch_description():
                 f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan'
                 '@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
 
-                f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points'
-                '@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+                # f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points'
+                # '@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             ],
             remappings=[
                 (f'/model/{ns}/cmd_vel', 'cmd_vel'),
@@ -296,10 +281,10 @@ def generate_launch_description():
                     f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan',
                     'scan_2d',
                 ),
-                (
-                    f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points',
-                    'points',
-                ),
+                # (
+                #     f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points',
+                #     'points',
+                # ),
             ],
         )))
 
