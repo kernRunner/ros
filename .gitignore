@@ -3,6 +3,6 @@ __pycache__/
 # swarm_gazebo/models/meshes/swarm_robot_complete.obj
 
 # Large Gazebo assets, kept locally only
-# swarm_gazebo/models/mars_gale_crater_patch1/materials/textures/*_4k.png
+swarm_gazebo/models/mars_gale_crater_patch1/materials/textures/*_4k.png
 # swarm_gazebo/models/mars_gale_crater_patch1/meshes/gale_crater_visual.dae
 # swarm_gazebo/models/mars_gale_crater_patch1/meshes/gale_crater_visual2.dae
