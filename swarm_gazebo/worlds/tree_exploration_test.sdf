@@ -6,44 +6,38 @@
     <gravity>0 0 -3.711</gravity>
 
     <physics name="stable_physics" type="ignored">
-      <max_step_size>0.001</max_step_size>
+      <max_step_size>0.0025</max_step_size>
       <real_time_factor>1.0</real_time_factor>
-      <real_time_update_rate>1000</real_time_update_rate>
+      <real_time_update_rate>400</real_time_update_rate>
     </physics>
 
     <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
     <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
     <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+
+  
     <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
-      <render_engine>ogre2</render_engine>
+      <render_engine>ogre</render_engine>
     </plugin>
 
     <scene>
-      <ambient>0.35 0.25 0.18 1</ambient>
+      <ambient>0.36 0.26 0.20 1</ambient>
       <background>0.72 0.52 0.39 1</background>
       <shadows>true</shadows>
     </scene>
 
-    <!-- Omnidirectional light moved back -->
-    <light name="mars_back_light" type="point">
-      <cast_shadows>false</cast_shadows>
+    <light name="mars_sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
 
-      <!-- very far back -->
-      <pose>-500 0 50 0 0 0</pose>
+      <diffuse>0.85 0.62 0.42 1</diffuse>
+      <specular>0.03 0.025 0.02 1</specular>
 
-      <diffuse>1.0 0.78 0.55 1</diffuse>
-      <specular>0.02 0.02 0.02 1</specular>
-
-      <attenuation>
-        <range>2000</range>
-        <constant>0.005</constant>
-        <linear>0.00001</linear>
-        <quadratic>0.00000001</quadratic>
-      </attenuation>
+      <direction>-0.45 0.25 -0.86</direction>
     </light>
 
-        <!-- OVERHEAD CAMERA: sees the full scene from above -->
-    <model name="camera_overhead">
+    <!-- OVERHEAD CAMERA -->
+    <!-- <model name="camera_overhead">
       <static>true</static>
       <pose>0 0 14 0 1.5708 0</pose>
 
@@ -68,10 +62,10 @@
           </camera>
         </sensor>
       </link>
-    </model>
+    </model> -->
 
     <!-- DIAGONAL CAMERA 1 -->
-    <model name="camera_diagonal_1">
+    <!-- <model name="camera_diagonal_1">
       <static>true</static>
       <pose>-10 -10 6 0 0.45 0.7854</pose>
 
@@ -79,7 +73,7 @@
         <sensor name="camera" type="camera">
           <always_on>true</always_on>
           <update_rate>5</update_rate>
-          <visualize>false</visualize>  
+          <visualize>false</visualize>
           <topic>/camera/diagonal_1/image</topic>
 
           <camera>
@@ -96,10 +90,10 @@
           </camera>
         </sensor>
       </link>
-    </model>
+    </model> -->
 
     <!-- DIAGONAL CAMERA 2 -->
-    <model name="camera_diagonal_2">
+    <!-- <model name="camera_diagonal_2">
       <static>true</static>
       <pose>10 10 6 0 0.45 -2.3562</pose>
 
@@ -124,9 +118,9 @@
           </camera>
         </sensor>
       </link>
-    </model>
+    </model> -->
 
-    <!-- Mars terrain model: stable STL visual fallback -->
+    <!-- Mars terrain model -->
     <model name="mars_gale_crater_patch1">
       <static>true</static>
 
@@ -168,8 +162,6 @@
 
           </material>
         </visual>
-
-
       </link>
     </model>
 
@@ -179,12 +171,11 @@
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- Sky dome background, rotated 180 degrees -->
+    <!-- Sky dome background -->
     <include>
       <uri>model://mars_sky_dome</uri>
       <pose>0 0 0 0 0 1.5708</pose>
     </include>
-
 
   </world>
 </sdf>
