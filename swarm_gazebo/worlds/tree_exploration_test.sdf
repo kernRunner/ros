@@ -142,25 +142,6 @@
               <uri>model://mars_gale_crater_patch1/meshes/gale_crater_visual.dae</uri>
             </mesh>
           </geometry>
-
-          <material>
-            <ambient>0.55 0.38 0.28 1</ambient>
-            <diffuse>0.85 0.62 0.45 1</diffuse>
-            <specular>0 0 0 1</specular>
-
-
-          <pbr>
-            <metal>
-              <albedo_map>model://mars_gale_crater_patch1/materials/textures/red_laterite_soil_stones_diff_4k.png</albedo_map>
-              <normal_map>model://mars_gale_crater_patch1/materials/textures/red_laterite_soil_stones_nor_dx_4k.png</normal_map>
-              <roughness_map>model://mars_gale_crater_patch1/materials/textures/red_laterite_soil_stones_rough_4k.png</roughness_map>
-              <roughness>1.0</roughness>
-              <metalness>0.0</metalness>
-            </metal>
-          </pbr>
-
-
-          </material>
         </visual>
       </link>
     </model>
