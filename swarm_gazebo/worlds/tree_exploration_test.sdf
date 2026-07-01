@@ -15,7 +15,6 @@
     <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
     <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
 
-  
     <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
       <render_engine>ogre</render_engine>
     </plugin>
@@ -29,98 +28,13 @@
     <light name="mars_sun" type="directional">
       <cast_shadows>true</cast_shadows>
       <pose>0 0 10 0 0 0</pose>
-
       <diffuse>0.85 0.62 0.42 1</diffuse>
       <specular>0.03 0.025 0.02 1</specular>
-
       <direction>-0.45 0.25 -0.86</direction>
     </light>
 
-    <!-- OVERHEAD CAMERA -->
-    <!-- <model name="camera_overhead">
-      <static>true</static>
-      <pose>0 0 14 0 1.5708 0</pose>
-
-      <link name="link">
-        <sensor name="camera" type="camera">
-          <always_on>true</always_on>
-          <update_rate>5</update_rate>
-          <visualize>false</visualize>
-          <topic>/camera/overhead/image</topic>
-
-          <camera>
-            <horizontal_fov>1.35</horizontal_fov>
-            <image>
-              <width>1280</width>
-              <height>720</height>
-              <format>R8G8B8</format>
-            </image>
-            <clip>
-              <near>0.1</near>
-              <far>100</far>
-            </clip>
-          </camera>
-        </sensor>
-      </link>
-    </model> -->
-
-    <!-- DIAGONAL CAMERA 1 -->
-    <!-- <model name="camera_diagonal_1">
-      <static>true</static>
-      <pose>-10 -10 6 0 0.45 0.7854</pose>
-
-      <link name="link">
-        <sensor name="camera" type="camera">
-          <always_on>true</always_on>
-          <update_rate>5</update_rate>
-          <visualize>false</visualize>
-          <topic>/camera/diagonal_1/image</topic>
-
-          <camera>
-            <horizontal_fov>1.20</horizontal_fov>
-            <image>
-              <width>1280</width>
-              <height>720</height>
-              <format>R8G8B8</format>
-            </image>
-            <clip>
-              <near>0.1</near>
-              <far>100</far>
-            </clip>
-          </camera>
-        </sensor>
-      </link>
-    </model> -->
-
-    <!-- DIAGONAL CAMERA 2 -->
-    <!-- <model name="camera_diagonal_2">
-      <static>true</static>
-      <pose>10 10 6 0 0.45 -2.3562</pose>
-
-      <link name="link">
-        <sensor name="camera" type="camera">
-          <always_on>true</always_on>
-          <update_rate>5</update_rate>
-          <visualize>false</visualize>
-          <topic>/camera/diagonal_2/image</topic>
-
-          <camera>
-            <horizontal_fov>1.20</horizontal_fov>
-            <image>
-              <width>1280</width>
-              <height>720</height>
-              <format>R8G8B8</format>
-            </image>
-            <clip>
-              <near>0.1</near>
-              <far>100</far>
-            </clip>
-          </camera>
-        </sensor>
-      </link>
-    </model> -->
-
     <!-- Mars terrain model -->
+<!-- Mars terrain model -->
     <model name="mars_gale_crater_patch1">
       <static>true</static>
 
@@ -134,15 +48,68 @@
           </geometry>
         </collision>
 
+        <!-- Solid base terrain underneath the textured visual -->
+        <visual name="base_color_visual">
+          <cast_shadows>false</cast_shadows>
+          <pose>0 0 -0.02 0 0 0</pose>
+
+          <geometry>
+            <mesh>
+              <uri>model://mars_gale_crater_patch1/meshes/gale_crater_patch_final.stl</uri>
+            </mesh>
+          </geometry>
+
+          <material>
+            <ambient>0.45 0.28 0.16 1</ambient>
+            <diffuse>0.45 0.28 0.16 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <emissive>0.01 0.006 0.003 1</emissive>
+          </material>
+        </visual>
+
+        <!-- Textured terrain on top -->
         <visual name="visual">
           <cast_shadows>true</cast_shadows>
+          <pose>0 0 0.01 0 0 0</pose>
 
           <geometry>
             <mesh>
               <uri>model://mars_gale_crater_patch1/meshes/gale_crater_visual.dae</uri>
             </mesh>
           </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <emissive>0 0 0 1</emissive>
+
+            <pbr>
+              <metal>
+                <albedo_map>model://mars_gale_crater_patch1/materials/textures/red_laterite_soil_stones_diff_4k_8bit.png</albedo_map>
+                <roughness>1.0</roughness>
+                <metalness>0.0</metalness>
+              </metal>
+            </pbr>
+          </material>
         </visual>
+
+        <!-- Tiny helper visual -->
+        <visual name="keep_alive_visual">
+          <pose>0 0 0.05 0 0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.01</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <emissive>1 1 1 1</emissive>
+          </material>
+        </visual>
+
       </link>
     </model>
 

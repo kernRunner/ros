@@ -256,7 +256,7 @@ def generate_launch_description():
                 '-z', r['z'],
             ],
         )))
-
+        
         actions.append(later(d + 0.15, Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
@@ -270,8 +270,8 @@ def generate_launch_description():
                 f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan'
                 '@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
 
-                # f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points'
-                # '@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+                f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points'
+                '@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             ],
             remappings=[
                 (f'/model/{ns}/cmd_vel', 'cmd_vel'),
@@ -281,10 +281,10 @@ def generate_launch_description():
                     f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar/scan',
                     'scan_2d',
                 ),
-                # (
-                #     f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points',
-                #     'points',
-                # ),
+                (
+                    f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points',
+                    'points',
+                ),
             ],
         )))
 
@@ -336,37 +336,45 @@ def generate_launch_description():
                 {'robot_name': ns},
                 {'cmd_vel_topic': 'cmd_vel'},
                 {'mission_command_topic': '/swarm/mission_mode'},
+
                 {'desired_follow_distance_m': 0.95},
-                {'follow_deadband_m': 0.18},
-                {'hold_gap_deadband_m': 0.16},
-                {'hold_heading_deadband_rad': 0.35},
+                {'follow_deadband_m': 0.25},
+                {'hold_gap_deadband_m': 0.22},
+                {'hold_heading_deadband_rad': 0.50},
+
                 {'speed_match_enabled': True},
-                {'speed_match_gain': 0.65},
-                {'min_creep_speed': 0.015},
-                {'command_smoothing_alpha_linear': 0.25},
-                {'command_smoothing_alpha_angular': 0.22},
-                {'max_linear_speed': 0.14},
-                {'min_linear_speed_when_far': 0.05},
-                {'max_angular_speed': 0.70},
+                {'speed_match_gain': 0.85},
+                {'min_creep_speed': 0.01},
+
+                {'command_smoothing_alpha_linear': 0.18},
+                {'command_smoothing_alpha_angular': 0.12},
+
+                {'max_linear_speed': 0.12},
+                {'min_linear_speed_when_far': 0.04},
+                {'max_angular_speed': 0.45},
                 {'linear_gain': 0.35},
-                {'angular_gain': 0.75},
+                {'angular_gain': 0.45},
+
                 {'min_robot_distance_m': 0.42},
                 {'slow_robot_distance_m': 0.70},
                 {'too_close_reverse_speed': -0.015},
+
                 {'far_gap_m': 1.25},
                 {'very_far_gap_m': 1.70},
                 {'catchup_speed_boost': 1.35},
-                {'startup_gap_ratio': 0.85},
+
+                {'startup_gap_ratio': 1.05},
                 {'lock_chain_order': False},
                 {'require_formation_ready': False},
+
                 {'sequential_start_enabled': True},
-                {'sequential_slot_delay_sec': 0.1},
-                {'sequential_front_pair_gap_ratio': 0.85},
-                {'sequential_front_alignment_tolerance_rad': 0.70},
-                {'sequential_self_alignment_tolerance_rad': 0.45},
+                {'sequential_slot_delay_sec': 0.35},
+                {'sequential_predecessor_move_m': 0.45},
+                {'sequential_front_pair_gap_ratio': 0.95},
+                {'sequential_front_alignment_tolerance_rad': 0.55},
+                {'sequential_self_alignment_tolerance_rad': 0.40},
                 {'sequential_prealign_enabled': False},
-                {'sequential_prealign_angular_gain': 0.65},
-                {'sequential_predecessor_move_m': 0.10},
+
                 {'chain_order_mode': 'explicit'},
                 {'explicit_chain_order': c},
             ],

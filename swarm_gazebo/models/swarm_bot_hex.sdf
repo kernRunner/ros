@@ -127,7 +127,7 @@
         </material>
       </visual>
 
-      <!-- <sensor name="lidar_3d" type="gpu_lidar">
+      <sensor name="lidar_3d" type="gpu_lidar">
         <pose>0 0 0.155 0 0 0</pose>
         <update_rate>2</update_rate>
 
@@ -157,7 +157,7 @@
 
         <always_on>1</always_on>
         <visualize>false</visualize>
-      </sensor> -->
+      </sensor>
     </link>
 
     <link name="left_front_wheel">

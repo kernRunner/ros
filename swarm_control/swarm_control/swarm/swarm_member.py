@@ -3,6 +3,7 @@ import json
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
@@ -111,7 +112,12 @@ class SwarmMember(Node):
 
     def _init_ros_interfaces(self):
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
-        self.create_subscription(LaserScan, 'scan', self.scan_callback, 10)
+        self.create_subscription(
+            LaserScan,
+            'scan',
+            self.scan_callback,
+            qos_profile_sensor_data,
+        )
 
         if self.use_ground_truth_pose:
             self.create_subscription(
