@@ -31,6 +31,7 @@
       </collision>
 
       <visual name="visual_body">
+        <pose>0 0 0.10 1.5708 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://swarm_bot_blender/meshes/RobotTextured.obj</uri>
@@ -68,8 +69,6 @@
           <specular>0.10 0.10 0.10 1</specular>
         </material>
       </visual>
-
-
       -->
 
       <sensor name="lidar" type="gpu_lidar">
