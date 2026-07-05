@@ -77,6 +77,7 @@ class TreeExplorer(Node):
         self.declare_parameter('return_home_max_turn', 0.45)
         self.declare_parameter('escape_rejoin_heading_error_deg', 25.0)
         self.declare_parameter('escape_min_time_sec', 2.0)
+        self.declare_parameter('rejoin_cooldown_sec', 2.5)
 
     def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
@@ -167,6 +168,9 @@ class TreeExplorer(Node):
         self.escape_min_time_sec = float(
             self.get_parameter('escape_min_time_sec').value
         )
+        self.rejoin_cooldown_sec = float(
+            self.get_parameter('rejoin_cooldown_sec').value
+        )
 
     def _init_state(self):
         self.x = 0.0
@@ -211,6 +215,8 @@ class TreeExplorer(Node):
         self.mode = 'CRUISE'
         self.avoid_turn_sign = 0.0
         self.escape_start_ns = 0
+        self.rejoin_start_ns = 0
+        self.last_avoid_turn_sign = 0.0
 
     def _init_ros_interfaces(self):
         self.cmd_pub = self.create_publisher(
@@ -604,6 +610,8 @@ class TreeExplorer(Node):
 
         if elapsed >= self.escape_min_time_sec and front_clear and obstacle_side_clear:
             self.mode = 'REJOIN_HEADING'
+            self.rejoin_start_ns = self.get_clock().now().nanoseconds
+            self.last_avoid_turn_sign = self.avoid_turn_sign
             return self._rejoin_heading_command()
 
         linear = min(self.forward_speed, 0.07)
@@ -623,22 +631,43 @@ class TreeExplorer(Node):
         return linear, angular
 
     def _rejoin_heading_command(self):
-        """Return to preferred heading after obstacle escape is complete."""
+        """Return to preferred heading only after a mandatory cooldown."""
         if self.front < self.front_blocked_distance:
             self._enter_avoid_mode()
             return self._avoid_obstacle_command()
 
+        elapsed = (
+            self.get_clock().now().nanoseconds - self.rejoin_start_ns
+        ) / 1e9
+
         heading_error = normalize_angle(self.preferred_heading - self.yaw)
 
+        heading_turn = self.heading_gain * heading_error
+        heading_turn = max(-self.max_heading_turn, min(self.max_heading_turn, heading_turn))
+
+        # Mandatory cooldown:
+        # Do NOT switch back to CRUISE until this time is fully finished.
+        if elapsed < self.rejoin_cooldown_sec:
+            cooldown_ratio = elapsed / max(self.rejoin_cooldown_sec, 0.01)
+
+            gentle_around_obstacle = -self.last_avoid_turn_sign * 0.10
+
+            angular = (
+                (1.0 - cooldown_ratio) * gentle_around_obstacle
+                + cooldown_ratio * heading_turn
+            )
+
+            linear = min(self.forward_speed, 0.055)
+            return linear, angular
+
+        # Only after cooldown is complete may we return to normal cruise.
         if abs(heading_error) < math.radians(self.escape_rejoin_heading_error_deg):
             self.mode = 'CRUISE'
 
-        angular = self.heading_gain * heading_error
-        angular = max(-self.max_heading_turn, min(self.max_heading_turn, angular))
+        linear = min(self.forward_speed, 0.065)
+        return linear, heading_turn
 
-        linear = min(self.forward_speed, 0.075)
-        return linear, angular
-
+        
     def _relay_leash_speed_scale(self):
         """
         Slow or stop a group leader if it is too far from its parent relay.

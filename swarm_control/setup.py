@@ -58,7 +58,9 @@ setup(
             'breadcrumb_manager = swarm_control.exploration.breadcrumb_manager:main',
             'line_alignment_monitor = swarm_control.swarm.line_alignment_monitor:main',
             'gazebo_pose_bridge = swarm_control.control.gazebo_pose_bridge:main',
-        
+
+            'swarm_lidar_mapper.py = swarm_control.mapping.swarm_lidar_mapper:main',
+            'swarm_3d_cloud_mapper.py = swarm_control.mapping.swarm_3d_cloud_mapper:main',
         ],
     },
 )

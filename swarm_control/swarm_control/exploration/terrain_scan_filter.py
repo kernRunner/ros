@@ -33,11 +33,19 @@ class TerrainScanFilter(Node):
         self.declare_parameter('angle_max', math.pi)
         self.declare_parameter('num_ranges', 120)
 
-        self.declare_parameter('range_min', 0.25)
+        self.declare_parameter('range_min', 0.40)
         self.declare_parameter('range_max', 7.0)
 
-        self.declare_parameter('min_obstacle_height', 0.05)
-        self.declare_parameter('max_obstacle_height', 0.70)
+        # z is relative to lidar_3d frame.
+        # Keep only objects around lidar height and above.
+        self.declare_parameter('min_obstacle_height', 0.10)
+        self.declare_parameter('max_obstacle_height', 0.80)
+
+        # Ignore ground-like downward rays on slopes.
+        self.declare_parameter('min_vertical_angle', -0.08)
+
+        # Ignore robot body / near self-points.
+        self.declare_parameter('body_ignore_radius', 0.45)
 
         self.robot_name = self.get_parameter('robot_name').value
         self.active_only_when_leader = bool(
@@ -59,6 +67,13 @@ class TerrainScanFilter(Node):
         )
         self.max_obstacle_height = float(
             self.get_parameter('max_obstacle_height').value
+        )
+
+        self.min_vertical_angle = float(
+            self.get_parameter('min_vertical_angle').value
+        )
+        self.body_ignore_radius = float(
+            self.get_parameter('body_ignore_radius').value
         )
 
         self.angle_increment = (
@@ -130,17 +145,24 @@ class TerrainScanFilter(Node):
             if not math.isfinite(x) or not math.isfinite(y) or not math.isfinite(z):
                 continue
 
-            # Ignore ground / slope points.
-            if z < self.min_obstacle_height:
+            distance_xy = math.hypot(x, y)
+
+            # Ignore robot body / near self-points.
+            if distance_xy < self.body_ignore_radius:
                 continue
 
-            # Ignore very high points.
-            if z > self.max_obstacle_height:
+            if distance_xy < self.range_min or distance_xy > self.range_max:
                 continue
 
-            distance = math.hypot(x, y)
+            # z is relative to lidar_3d frame.
+            # Ignore ground / slope points and very high points.
+            if z < self.min_obstacle_height or z > self.max_obstacle_height:
+                continue
 
-            if distance < self.range_min or distance > self.range_max:
+            # Extra slope filter:
+            # Ground on slopes often appears as downward points.
+            vertical_angle = math.atan2(z, max(distance_xy, 1e-6))
+            if vertical_angle < self.min_vertical_angle:
                 continue
 
             angle = math.atan2(y, x)
@@ -153,8 +175,8 @@ class TerrainScanFilter(Node):
             if index < 0 or index >= self.num_ranges:
                 continue
 
-            if distance < ranges[index]:
-                ranges[index] = distance
+            if distance_xy < ranges[index]:
+                ranges[index] = distance_xy
 
         scan = LaserScan()
         scan.header = msg.header
@@ -169,7 +191,6 @@ class TerrainScanFilter(Node):
         scan.intensities = []
 
         self.scan_pub.publish(scan)
-
 
 def main(args=None):
     rclpy.init(args=args)

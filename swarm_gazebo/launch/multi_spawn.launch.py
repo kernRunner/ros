@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction, SetEnvironmentVariable, ExecuteProcess
+from launch.actions import IncludeLaunchDescription, TimerAction, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -35,6 +35,7 @@ def compact_group(start_id, cx, cy):
         for i, (x, y) in enumerate(pts)
     ]
 
+
 def later(t, action):
     return TimerAction(period=t, actions=[action])
 
@@ -51,10 +52,6 @@ def generate_launch_description():
         'swarm_bot_hex.sdf',
     )
 
-    # Single small Gazebo group.
-    #
-    # We keep the relay-tree, swarm_member, path_follower, and tree_explorer logic.
-    # Only the number of robots is reduced.
     group_a = [
         'robot1', 'robot2', 'robot3',
         'robot4', 'robot5', 'robot6',
@@ -163,19 +160,24 @@ def generate_launch_description():
     common_tree = [
         {'use_sim_time': True},
 
-        # Smaller group, so split earlier than the old 9-robot group.
-        # Logic is unchanged; only the demo threshold is reduced.
-        {'split_distance_m': 20.0},
-        {'branch_angle_deg': 28.0},
+        # Split distances:
+        # branch_depth 1 = first split from root relay
+        # branch_depth 2+ = later splits
+        {'split_distance_m': 30.0},
+        {'first_split_distance_m': 25.0},
+        {'later_split_distance_m': 65.0},
+
+        {'branch_angle_deg': 45.0},
         {'publish_rate_hz': 1.0},
         {'single_robot_groups_are_leaders': True},
         {'min_group_size_to_split': 3},
         {'max_branch_depth': 3},
-        {'min_group_age_before_split_sec': 8.0},
+        {'min_group_age_before_split_sec': 18.0},
         {'require_group_stable_before_split': True},
-        {'max_pair_gap_for_split_m': 2.5},
-        {'min_relay_progress_ratio': 0.80},
+        {'max_pair_gap_for_split_m': 2.8},
+        {'min_relay_progress_ratio': 0.90},
         {'relay_selection_mode': 'chain_tail'},
+        {'allow_two_robot_terminal_split': True},
     ]
 
     actions.append(later(8.0, Node(
@@ -256,7 +258,7 @@ def generate_launch_description():
                 '-z', r['z'],
             ],
         )))
-        
+
         actions.append(later(d + 0.15, Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
@@ -272,6 +274,12 @@ def generate_launch_description():
 
                 f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points'
                 '@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+
+                f'/world/{world_name}/model/{ns}/link/chassis/sensor/front_camera/image'
+                '@sensor_msgs/msg/Image[gz.msgs.Image',
+
+                f'/world/{world_name}/model/{ns}/link/chassis/sensor/front_camera/camera_info'
+                '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             ],
             remappings=[
                 (f'/model/{ns}/cmd_vel', 'cmd_vel'),
@@ -284,6 +292,14 @@ def generate_launch_description():
                 (
                     f'/world/{world_name}/model/{ns}/link/chassis/sensor/lidar_3d/scan/points',
                     'points',
+                ),
+                (
+                    f'/world/{world_name}/model/{ns}/link/chassis/sensor/front_camera/image',
+                    'camera/image_raw',
+                ),
+                (
+                    f'/world/{world_name}/model/{ns}/link/chassis/sensor/front_camera/camera_info',
+                    'camera/camera_info',
                 ),
             ],
         )))
@@ -300,6 +316,45 @@ def generate_launch_description():
                 {'pose_topic': 'ground_truth_pose'},
                 {'parent_frame': 'world'},
                 {'child_frame': f'{ns}/chassis'},
+            ],
+        )))
+
+        actions.append(later(d + 0.20, Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name=f'{ns}_lidar_tf',
+            namespace=ns,
+            arguments=[
+                '0', '0', '0.085',
+                '0', '0', '0',
+                f'{ns}/chassis',
+                f'{ns}/chassis/lidar',
+            ],
+        )))
+
+        actions.append(later(d + 0.20, Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name=f'{ns}_lidar_3d_tf',
+            namespace=ns,
+            arguments=[
+                '0', '0', '0.155',
+                '0', '0', '0',
+                f'{ns}/chassis',
+                f'{ns}/chassis/lidar_3d',
+            ],
+        )))
+
+        actions.append(later(d + 0.20, Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name=f'{ns}_front_camera_tf',
+            namespace=ns,
+            arguments=[
+                '0.18', '0', '0.105',
+                '0', '0', '0',
+                f'{ns}/chassis',
+                f'{ns}/chassis/front_camera',
             ],
         )))
 
@@ -337,31 +392,31 @@ def generate_launch_description():
                 {'cmd_vel_topic': 'cmd_vel'},
                 {'mission_command_topic': '/swarm/mission_mode'},
 
-                {'desired_follow_distance_m': 0.95},
-                {'follow_deadband_m': 0.25},
-                {'hold_gap_deadband_m': 0.22},
-                {'hold_heading_deadband_rad': 0.50},
+                {'desired_follow_distance_m': 1.10},
+                {'follow_deadband_m': 0.35},
+                {'hold_gap_deadband_m': 0.35},
+                {'hold_heading_deadband_rad': 0.75},
 
                 {'speed_match_enabled': True},
-                {'speed_match_gain': 0.85},
-                {'min_creep_speed': 0.01},
+                {'speed_match_gain': 0.70},
+                {'min_creep_speed': 0.008},
 
-                {'command_smoothing_alpha_linear': 0.18},
-                {'command_smoothing_alpha_angular': 0.12},
+                {'command_smoothing_alpha_linear': 0.10},
+                {'command_smoothing_alpha_angular': 0.05},
 
-                {'max_linear_speed': 0.12},
-                {'min_linear_speed_when_far': 0.04},
-                {'max_angular_speed': 0.45},
-                {'linear_gain': 0.35},
-                {'angular_gain': 0.45},
+                {'max_linear_speed': 0.10},
+                {'min_linear_speed_when_far': 0.035},
+                {'max_angular_speed': 0.26},
+                {'linear_gain': 0.28},
+                {'angular_gain': 0.28},
+
+                {'far_gap_m': 1.40},
+                {'very_far_gap_m': 1.90},
+                {'catchup_speed_boost': 1.15},
 
                 {'min_robot_distance_m': 0.42},
                 {'slow_robot_distance_m': 0.70},
                 {'too_close_reverse_speed': -0.015},
-
-                {'far_gap_m': 1.25},
-                {'very_far_gap_m': 1.70},
-                {'catchup_speed_boost': 1.35},
 
                 {'startup_gap_ratio': 1.05},
                 {'lock_chain_order': False},
@@ -392,11 +447,16 @@ def generate_launch_description():
                 {'active_only_when_leader': True},
                 {'pointcloud_topic': 'points'},
                 {'scan_topic': 'scan'},
-                {'range_min': 0.25},
+
+                {'range_min': 0.55},
                 {'range_max': 7.0},
                 {'num_ranges': 90},
-                {'min_obstacle_height': -0.02},
-                {'max_obstacle_height': 0.70},
+
+                {'min_obstacle_height': 0.08},
+                {'max_obstacle_height': 1.10},
+
+                {'body_ignore_radius': 0.55},
+                {'min_vertical_angle': -0.05},
             ],
         )))
 
@@ -411,30 +471,146 @@ def generate_launch_description():
                 {'robot_name': ns},
                 {'cmd_vel_topic': 'cmd_vel'},
                 {'mission_command_topic': '/swarm/mission_mode'},
-                {'forward_speed': 0.08},
-                {'turn_speed': 0.30},
-                {'front_blocked_distance': 0.85},
+
+                {'forward_speed': 0.075},
+                {'turn_speed': 0.24},
+                {'front_blocked_distance': 3.20},
                 {'obstacle_escape_enabled': True},
+
                 {'chain_spacing_m': 1.15},
                 {'formation_tolerance_m': 0.35},
                 {'leader_start_delay_sec': 2.0},
+
+                # Leader does not wait for followers.
                 {'leader_wait_for_chain': False},
-                {'leader_slow_chain_gap_m': 2.00},
-                {'leader_max_chain_gap_m': 2.80},
+                {'leader_slow_chain_gap_m': 999.0},
+                {'leader_max_chain_gap_m': 999.0},
                 {'leader_wait_turn_allowed': True},
+
                 {'preferred_heading_deg': 0.0},
-                {'heading_gain': 0.65},
-                {'max_heading_turn': 0.35},
-                {'relay_leash_enabled': True},
-                {'relay_slow_distance_m': 32.0},
-                {'relay_stop_distance_m': 40.0},
+                {'heading_gain': 0.18},
+                {'max_heading_turn': 0.24},
+
+                # Leader does not wait for relay distance either.
+                # This prevents stopping at relay_stop_distance_m.
+                {'relay_leash_enabled': False},
+                {'relay_slow_distance_m': 999.0},
+                {'relay_stop_distance_m': 999.0},
                 {'relay_stop_turn_allowed': True},
+
                 {'return_home_speed': 0.08},
                 {'return_home_arrival_distance_m': 1.00},
                 {'return_home_heading_gain': 0.90},
                 {'return_home_max_turn': 0.45},
+
                 {'scan_topic': 'scan'},
+                {'side_clearance_distance': 1.30},
+                {'side_avoid_turn_gain': 0.18},
+                {'escape_front_clear_distance': 4.00},
+                {'escape_min_time_sec': 7.5},
+                {'escape_rejoin_heading_error_deg': 25.0},
+                {'rejoin_cooldown_sec': 10.0},
             ],
         )))
+
+    actions.append(Node(
+        package='swarm_control',
+        executable='swarm_lidar_mapper.py',
+        name='swarm_lidar_mapper',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True},
+        ],
+    ))
+
+    actions.append(Node(
+        package='swarm_control',
+        executable='swarm_3d_cloud_mapper.py',
+        name='swarm_3d_cloud_mapper',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True},
+            {'robot_names': active},
+            {'cloud_topic_suffix': 'points'},
+            {'fixed_frame': 'world'},
+            {'map_topic': '/swarm/map_3d'},
+
+            # Bigger = faster/lighter, smaller = more detailed/heavier.
+            {'voxel_size': 0.15},
+
+            # Safety caps so RViz does not get overloaded.
+            {'max_voxels': 250000},
+            {'max_points_per_cloud': 2500},
+
+            # Publish accumulated 3D map once per second.
+            {'publish_rate_hz': 1.0},
+
+            # Sensor-frame filtering.
+            {'range_min': 0.35},
+            {'range_max': 8.0},
+
+            # World-frame height filtering.
+            {'world_z_min': -3.0},
+            {'world_z_max': 8.0},
+        ],
+    ))
+
+    """
+    # ------------------------------------------------------------
+    # World camera bridge disabled for performance.
+    # Uncomment this block if you want the three fixed world cameras.
+    # ------------------------------------------------------------
+
+    actions.append(Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='world_cameras_bridge',
+        output='screen',
+        arguments=[
+            f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/image'
+            '@sensor_msgs/msg/Image[gz.msgs.Image',
+            f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/camera_info'
+            '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+
+            f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/image'
+            '@sensor_msgs/msg/Image[gz.msgs.Image',
+            f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/camera_info'
+            '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+
+            f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/image'
+            '@sensor_msgs/msg/Image[gz.msgs.Image',
+            f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/camera_info'
+            '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+        ],
+        remappings=[
+            (
+                f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/image',
+                '/world_camera_1/image_raw',
+            ),
+            (
+                f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/camera_info',
+                '/world_camera_1/camera_info',
+            ),
+
+            (
+                f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/image',
+                '/world_camera_2/image_raw',
+            ),
+            (
+                f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/camera_info',
+                '/world_camera_2/camera_info',
+            ),
+
+            (
+                f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/image',
+                '/world_camera_3/image_raw',
+            ),
+            (
+                f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/camera_info',
+                '/world_camera_3/camera_info',
+            ),
+        ],
+    ))
+    """
 
     return LaunchDescription(actions)
