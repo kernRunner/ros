@@ -5,3 +5,8 @@ __pycache__/
 swarm_gazebo/models/mars_gale_crater_patch1/materials/textures/*_4k.png
 swarm_gazebo/models/mars_gale_crater_patch1/meshes/gale_crater_visual.dae
 swarm_gazebo/models/mars_gale_crater_patch1/meshes/gale_crater_visual2.dae
+# Local-only large Gazebo assets
+swarm_gazebo/models/mars_gale_crater_patch1/materials/textures/
+swarm_gazebo/models/mars_gale_crater_patch1/meshes/
+swarm_gazebo/models/robot_textured/materials/
+swarm_gazebo/models/robot_textured/meshes/
