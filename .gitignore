@@ -10,3 +10,7 @@ swarm_gazebo/models/mars_gale_crater_patch1/materials/textures/
 swarm_gazebo/models/mars_gale_crater_patch1/meshes/
 swarm_gazebo/models/robot_textured/materials/
 swarm_gazebo/models/robot_textured/meshes/
+
+# Backup files
+*.bak
+*.dae.bak
