@@ -1,3 +1,10 @@
+# Keeps the swarm mission mode persistent so late-starting robots still receive it.
+#
+# Send mission commands with:
+# ros2 topic pub --once /swarm/mission_command std_msgs/msg/String "{data: stop}"
+# ros2 topic pub --once /swarm/mission_command std_msgs/msg/String "{data: explore}"
+# ros2 topic pub --once /swarm/mission_command std_msgs/msg/String "{data: return_home}"
+
 import json
 
 import rclpy
@@ -6,33 +13,6 @@ from std_msgs.msg import String
 
 
 class MissionController(Node):
-    """
-    Persistent swarm mission mode controller.
-
-    Input:
-      /swarm/mission_command  std_msgs/String
-
-    Output:
-      /swarm/mission_mode     std_msgs/String, published continuously
-
-    Accepted command payloads:
-      plain text:
-        explore
-        stop
-        return_home
-
-      JSON-like:
-        {"mode":"explore"}
-        {"mode":"stop"}
-        {"mode":"return_home"}
-
-    Why this node exists:
-      /swarm/mission_command is an event topic. A robot can miss a one-shot
-      event while launching, spinning slowly, or under CPU load. This controller
-      turns that event into persistent state so all robots eventually converge
-      to the same mode.
-    """
-
     VALID_MODES = {'explore', 'stop', 'return_home'}
 
     def __init__(self):
@@ -66,6 +46,7 @@ class MissionController(Node):
         )
 
     def command_callback(self, msg: String):
+        # Updates the mode when a valid command arrives.
         mode = self.parse_mode(msg.data)
 
         if mode is None:
@@ -83,6 +64,7 @@ class MissionController(Node):
         self.publish_mode()
 
     def parse_mode(self, raw: str):
+        # Accepts plain text or JSON-like command input.
         raw = (raw or '').strip()
 
         if not raw:

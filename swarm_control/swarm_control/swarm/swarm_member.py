@@ -1,3 +1,5 @@
+# Publishes this robot's swarm state and applies relay-tree role assignments.
+
 from typing import Dict
 import json
 
@@ -22,24 +24,17 @@ from swarm_control.core.scan_utils import sector_min
 
 
 class SwarmMember(Node):
-    """
-    Swarm state publisher with relay-tree assignment support.
-
-    This node still publishes /swarm/robot_states, but role/leader/group data can
-    now be overridden by /swarm/role_assignments from relay_tree_manager.py.
-    """
-
     def __init__(self):
         super().__init__('swarm_member')
 
-        self._declare_parameters()
-        self._read_parameters()
-        self._init_state()
-        self._init_ros_interfaces()
+        self.declare_parameters()
+        self.read_parameters()
+        self.init_state()
+        self.init_ros_interfaces()
 
         self.get_logger().info(f'[{self.robot_name}] swarm_member started')
 
-    def _declare_parameters(self):
+    def declare_parameters(self):
         self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('state_timeout_sec', 1.5)
         self.declare_parameter('publish_rate_hz', 5.0)
@@ -54,7 +49,7 @@ class SwarmMember(Node):
         self.declare_parameter('use_role_assignments', True)
         self.declare_parameter('role_assignment_topic', '/swarm/role_assignments')
 
-    def _read_parameters(self):
+    def read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.state_timeout_sec = float(self.get_parameter('state_timeout_sec').value)
         self.publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
@@ -81,7 +76,7 @@ class SwarmMember(Node):
             'role_assignment_topic'
         ).value
 
-    def _init_state(self):
+    def init_state(self):
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
@@ -110,7 +105,7 @@ class SwarmMember(Node):
         self.role_assignments = {}
         self.have_assignment = False
 
-    def _init_ros_interfaces(self):
+    def init_ros_interfaces(self):
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.create_subscription(
             LaserScan,
@@ -187,6 +182,7 @@ class SwarmMember(Node):
         )
 
     def assignment_callback(self, msg: String):
+        # Reads relay-tree assignments from the manager.
         try:
             assignments = json.loads(msg.data)
         except Exception as exc:
@@ -206,9 +202,10 @@ class SwarmMember(Node):
             return
 
         self.have_assignment = True
-        self._apply_assignment(assignment)
+        self.apply_assignment(assignment)
 
-    def _apply_assignment(self, assignment: dict):
+    def apply_assignment(self, assignment: dict):
+        # Applies this robot's role, leader, and relay-tree group data.
         old_role = self.role
         old_leader = self.current_leader
         old_group = self.group_id
@@ -250,47 +247,49 @@ class SwarmMember(Node):
         return response
 
     def publish_state(self):
+        # Publishes this robot's current RobotState.
         now = self.get_clock().now()
 
         if self.use_role_assignments and self.have_assignment:
             pass
         else:
-            self._update_leader_if_needed(now)
-            self._update_role_from_election()
+            self.update_leader_if_needed(now)
+            self.update_role_from_election()
 
-        msg = self._build_robot_state_msg(now)
+        msg = self.build_robot_state_msg(now)
         self.last_states[self.robot_name] = msg
         self.state_pub.publish(msg)
 
-    def _update_leader_if_needed(self, now):
+    def update_leader_if_needed(self, now):
+        # Runs leader election only when assignments are not available.
         if not self.initial_election_done:
-            if self._should_run_election(now):
-                candidates = self._get_active_candidates(now)
+            if self.should_run_election(now):
+                candidates = self.get_active_candidates(now)
 
                 if len(candidates) < 4:
                     self.current_leader = ''
                     return
 
-                self.current_leader = self._elect_leader(now)
+                self.current_leader = self.elect_leader(now)
                 self.initial_election_done = True
                 self.reselect_requested = False
-                self._log_leader_change('leader selected')
+                self.log_leader_change('leader selected')
                 return
 
             self.current_leader = ''
             return
 
         if self.reselect_requested:
-            self.current_leader = self._elect_leader(now)
+            self.current_leader = self.elect_leader(now)
             self.reselect_requested = False
-            self._log_leader_change('leader reselected')
+            self.log_leader_change('leader reselected')
             return
 
         if not self.lock_leader_after_startup:
-            self.current_leader = self._elect_leader(now)
-            self._log_leader_change('leader updated')
+            self.current_leader = self.elect_leader(now)
+            self.log_leader_change('leader updated')
 
-    def _should_run_election(self, now) -> bool:
+    def should_run_election(self, now) -> bool:
         elapsed_sec = (now.nanoseconds - self.start_time_ns) / 1e9
         startup_ready = (
             not self.initial_election_done
@@ -298,7 +297,7 @@ class SwarmMember(Node):
         )
         return startup_ready or self.reselect_requested
 
-    def _update_role_from_election(self):
+    def update_role_from_election(self):
         if self.current_leader and self.current_leader == self.robot_name:
             self.role = 'leader'
             self.group_id = 'group_0'
@@ -306,7 +305,7 @@ class SwarmMember(Node):
         else:
             self.role = 'follower'
 
-    def _build_robot_state_msg(self, now) -> RobotState:
+    def build_robot_state_msg(self, now) -> RobotState:
         msg = RobotState()
 
         msg.robot_name = self.robot_name
@@ -317,7 +316,7 @@ class SwarmMember(Node):
         msg.yaw = self.yaw
         msg.linear_speed = self.linear_speed
 
-        msg.leader_score = self._compute_leader_score()
+        msg.leader_score = self.compute_leader_score()
         msg.role = self.role
         msg.leader_id = self.current_leader
         msg.active = self.active
@@ -333,14 +332,16 @@ class SwarmMember(Node):
 
         return msg
 
-    def _compute_leader_score(self) -> float:
+    def compute_leader_score(self) -> float:
+        # Scores robots using front clearance, speed, and a stable tie-break.
         open_space_term = min(self.front_clearance, 3.0)
         speed_term = max(self.linear_speed, 0.0)
         tie_break = robot_name_tiebreak(self.robot_name)
         return 2.0 * open_space_term + 0.5 * speed_term + tie_break
 
-    def _elect_leader(self, now) -> str:
-        candidates = self._get_active_candidates(now)
+    def elect_leader(self, now) -> str:
+        # Selects the best leader from recent active robot states.
+        candidates = self.get_active_candidates(now)
 
         if not candidates:
             return self.robot_name
@@ -367,7 +368,7 @@ class SwarmMember(Node):
 
         return leader.robot_name
 
-    def _get_active_candidates(self, now):
+    def get_active_candidates(self, now):
         candidates = []
 
         for state in self.last_states.values():
@@ -378,7 +379,7 @@ class SwarmMember(Node):
 
         return candidates
 
-    def _log_leader_change(self, label: str):
+    def log_leader_change(self, label: str):
         if self.current_leader == self.last_logged_leader:
             return
 

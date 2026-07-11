@@ -1,3 +1,5 @@
+# Launches the Gazebo swarm exploration demo.
+
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, TimerAction, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -7,8 +9,7 @@ import os
 
 
 def compact_group(start_id, cx, cy):
-    # Spawn robots above uneven terrain so they do not start inside the map.
-    # They will fall down onto the collision mesh.
+    # Creates a compact 3x3 robot spawn layout.
     spawn_z = 0.15
 
     pts = [
@@ -37,6 +38,7 @@ def compact_group(start_id, cx, cy):
 
 
 def later(t, action):
+    # Delays startup of an action.
     return TimerAction(period=t, actions=[action])
 
 
@@ -52,6 +54,7 @@ def generate_launch_description():
         'swarm_bot_hex.sdf',
     )
 
+    # Initial robot group used by the relay tree.
     group_a = [
         'robot1', 'robot2', 'robot3',
         'robot4', 'robot5', 'robot6',
@@ -70,9 +73,10 @@ def generate_launch_description():
     actions = []
 
     # ------------------------------------------------------------
-    # Start Gazebo
+    # Gazebo setup
     # ------------------------------------------------------------
 
+    # Lets Gazebo find worlds and models.
     resource_paths = [
         gazebo_pkg,
         os.path.join(gazebo_pkg, 'models'),
@@ -99,6 +103,7 @@ def generate_launch_description():
         value=resource_path_value,
     ))
 
+    # Starts Gazebo with the selected world.
     actions.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(ros_gz_sim_pkg, 'launch', 'gz_sim.launch.py')
@@ -108,6 +113,7 @@ def generate_launch_description():
         }.items(),
     ))
 
+    # Bridges simulation time to ROS.
     actions.append(Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -121,6 +127,7 @@ def generate_launch_description():
         ],
     ))
 
+    # Bridges Gazebo model poses.
     actions.append(Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -131,6 +138,7 @@ def generate_launch_description():
         ],
     ))
 
+    # Converts Gazebo poses into robot pose topics.
     actions.append(Node(
         package='swarm_control',
         executable='gazebo_pose_bridge',
@@ -143,6 +151,7 @@ def generate_launch_description():
         ],
     ))
 
+    # Publishes the current mission mode.
     actions.append(Node(
         package='swarm_control',
         executable='mission_controller',
@@ -157,12 +166,9 @@ def generate_launch_description():
         ],
     ))
 
+    # Shared relay-tree parameters.
     common_tree = [
         {'use_sim_time': True},
-
-        # Split distances:
-        # branch_depth 1 = first split from root relay
-        # branch_depth 2+ = later splits
         {'split_distance_m': 30.0},
         {'first_split_distance_m': 25.0},
         {'later_split_distance_m': 65.0},
@@ -180,6 +186,7 @@ def generate_launch_description():
         {'allow_two_robot_terminal_split': True},
     ]
 
+    # Assigns roles and creates relay-tree splits.
     actions.append(later(8.0, Node(
         package='swarm_control',
         executable='relay_tree_manager',
@@ -195,6 +202,7 @@ def generate_launch_description():
         ],
     )))
 
+    # Publishes RViz markers for the relay tree.
     actions.append(Node(
         package='swarm_control',
         executable='relay_tree_visualizer',
@@ -215,6 +223,7 @@ def generate_launch_description():
         ],
     ))
 
+    # Publishes relay-tree evaluation/debug data.
     actions.append(Node(
         package='swarm_control',
         executable='relay_tree_evaluator',
@@ -239,12 +248,17 @@ def generate_launch_description():
         ],
     ))
 
+    # ------------------------------------------------------------
+    # Per-robot nodes
+    # ------------------------------------------------------------
+
     for i, r in enumerate(robots):
         ns = r['name']
         d = 1.5 + i * 0.7
         c = chain(ns)
         rt = role_topic(ns)
 
+        # Spawns the robot model in Gazebo.
         actions.append(later(d, Node(
             package='ros_gz_sim',
             executable='create',
@@ -259,6 +273,7 @@ def generate_launch_description():
             ],
         )))
 
+        # Bridges each robot's Gazebo topics to ROS.
         actions.append(later(d + 0.15, Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
@@ -304,6 +319,49 @@ def generate_launch_description():
             ],
         )))
 
+        # Publishes the 2D lidar frame.
+        actions.append(later(d + 0.20, Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name=f'{ns}_lidar_tf',
+            namespace=ns,
+            arguments=[
+                '0', '0', '0.085',
+                '0', '0', '0',
+                f'{ns}/chassis',
+                f'{ns}/chassis/lidar',
+            ],
+        )))
+
+        # Publishes the 3D lidar frame.
+        actions.append(later(d + 0.20, Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name=f'{ns}_lidar_3d_tf',
+            namespace=ns,
+            arguments=[
+                '0', '0', '0.155',
+                '0', '0', '0',
+                f'{ns}/chassis',
+                f'{ns}/chassis/lidar_3d',
+            ],
+        )))
+
+        # Publishes the front camera frame.
+        actions.append(later(d + 0.20, Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name=f'{ns}_front_camera_tf',
+            namespace=ns,
+            arguments=[
+                '0.18', '0', '0.105',
+                '0', '0', '0',
+                f'{ns}/chassis',
+                f'{ns}/chassis/front_camera',
+            ],
+        )))
+
+        # Publishes robot TF from ground-truth pose.
         actions.append(later(d + 0.3, Node(
             package='swarm_control',
             executable='ground_truth_to_tf',
@@ -319,45 +377,7 @@ def generate_launch_description():
             ],
         )))
 
-        actions.append(later(d + 0.20, Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name=f'{ns}_lidar_tf',
-            namespace=ns,
-            arguments=[
-                '0', '0', '0.085',
-                '0', '0', '0',
-                f'{ns}/chassis',
-                f'{ns}/chassis/lidar',
-            ],
-        )))
-
-        actions.append(later(d + 0.20, Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name=f'{ns}_lidar_3d_tf',
-            namespace=ns,
-            arguments=[
-                '0', '0', '0.155',
-                '0', '0', '0',
-                f'{ns}/chassis',
-                f'{ns}/chassis/lidar_3d',
-            ],
-        )))
-
-        actions.append(later(d + 0.20, Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name=f'{ns}_front_camera_tf',
-            namespace=ns,
-            arguments=[
-                '0.18', '0', '0.105',
-                '0', '0', '0',
-                f'{ns}/chassis',
-                f'{ns}/chassis/front_camera',
-            ],
-        )))
-
+        # Publishes RobotState and applies role assignments.
         actions.append(later(d + 0.45, Node(
             package='swarm_control',
             executable='swarm_member',
@@ -380,6 +400,7 @@ def generate_launch_description():
             ],
         )))
 
+        # Keeps followers spaced in the robot chain.
         actions.append(later(d + 0.6, Node(
             package='swarm_control',
             executable='path_follower',
@@ -392,32 +413,39 @@ def generate_launch_description():
                 {'cmd_vel_topic': 'cmd_vel'},
                 {'mission_command_topic': '/swarm/mission_mode'},
 
+                # Spacing behavior
                 {'desired_follow_distance_m': 1.10},
                 {'follow_deadband_m': 0.35},
                 {'hold_gap_deadband_m': 0.35},
                 {'hold_heading_deadband_rad': 0.75},
 
+                # Speed matching
                 {'speed_match_enabled': True},
                 {'speed_match_gain': 0.70},
                 {'min_creep_speed': 0.008},
 
+                # Command smoothing
                 {'command_smoothing_alpha_linear': 0.10},
                 {'command_smoothing_alpha_angular': 0.05},
 
+                # Motion limits
                 {'max_linear_speed': 0.10},
                 {'min_linear_speed_when_far': 0.035},
                 {'max_angular_speed': 0.26},
                 {'linear_gain': 0.28},
                 {'angular_gain': 0.28},
 
+                # Catch-up behavior
                 {'far_gap_m': 1.40},
                 {'very_far_gap_m': 1.90},
                 {'catchup_speed_boost': 1.15},
 
+                # Collision safety
                 {'min_robot_distance_m': 0.42},
                 {'slow_robot_distance_m': 0.70},
                 {'too_close_reverse_speed': -0.015},
 
+                # Startup gating
                 {'startup_gap_ratio': 1.05},
                 {'lock_chain_order': False},
                 {'require_formation_ready': False},
@@ -430,11 +458,13 @@ def generate_launch_description():
                 {'sequential_self_alignment_tolerance_rad': 0.40},
                 {'sequential_prealign_enabled': False},
 
+                # Chain order
                 {'chain_order_mode': 'explicit'},
                 {'explicit_chain_order': c},
             ],
         )))
 
+        # Converts 3D lidar points into a filtered obstacle scan.
         actions.append(later(d + 0.65, Node(
             package='swarm_control',
             executable='terrain_scan_filter',
@@ -448,18 +478,22 @@ def generate_launch_description():
                 {'pointcloud_topic': 'points'},
                 {'scan_topic': 'scan'},
 
+                # Range sampling
                 {'range_min': 0.55},
                 {'range_max': 7.0},
                 {'num_ranges': 90},
 
+                # Obstacle height filter
                 {'min_obstacle_height': 0.08},
                 {'max_obstacle_height': 1.10},
 
+                # Self-filtering
                 {'body_ignore_radius': 0.55},
                 {'min_vertical_angle': -0.05},
             ],
         )))
 
+        # Drives leaders during exploration.
         actions.append(later(d + 0.95, Node(
             package='swarm_control',
             executable='tree_explorer',
@@ -472,11 +506,13 @@ def generate_launch_description():
                 {'cmd_vel_topic': 'cmd_vel'},
                 {'mission_command_topic': '/swarm/mission_mode'},
 
+                # Basic movement
                 {'forward_speed': 0.075},
                 {'turn_speed': 0.24},
                 {'front_blocked_distance': 3.20},
                 {'obstacle_escape_enabled': True},
 
+                # Formation startup
                 {'chain_spacing_m': 1.15},
                 {'formation_tolerance_m': 0.35},
                 {'leader_start_delay_sec': 2.0},
@@ -487,6 +523,7 @@ def generate_launch_description():
                 {'leader_max_chain_gap_m': 999.0},
                 {'leader_wait_turn_allowed': True},
 
+                # Heading control
                 {'preferred_heading_deg': 0.0},
                 {'heading_gain': 0.18},
                 {'max_heading_turn': 0.24},
@@ -498,11 +535,13 @@ def generate_launch_description():
                 {'relay_stop_distance_m': 999.0},
                 {'relay_stop_turn_allowed': True},
 
+                # Return-home behavior
                 {'return_home_speed': 0.08},
                 {'return_home_arrival_distance_m': 1.00},
                 {'return_home_heading_gain': 0.90},
                 {'return_home_max_turn': 0.45},
 
+                # Obstacle behavior
                 {'scan_topic': 'scan'},
                 {'side_clearance_distance': 1.30},
                 {'side_avoid_turn_gain': 0.18},
@@ -513,6 +552,11 @@ def generate_launch_description():
             ],
         )))
 
+    # ------------------------------------------------------------
+    # Mapping nodes
+    # ------------------------------------------------------------
+
+    # Builds a shared 2D lidar map.
     actions.append(Node(
         package='swarm_control',
         executable='swarm_lidar_mapper.py',
@@ -523,6 +567,7 @@ def generate_launch_description():
         ],
     ))
 
+    # Builds an accumulated 3D point-cloud map.
     actions.append(Node(
         package='swarm_control',
         executable='swarm_3d_cloud_mapper.py',
@@ -555,62 +600,60 @@ def generate_launch_description():
         ],
     ))
 
-    """
+
     # ------------------------------------------------------------
     # World camera bridge disabled for performance.
-    # Uncomment this block if you want the three fixed world cameras.
     # ------------------------------------------------------------
 
-    actions.append(Node(
-        package='ros_gz_bridge',
-        executable='parameter_bridge',
-        name='world_cameras_bridge',
-        output='screen',
-        arguments=[
-            f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/image'
-            '@sensor_msgs/msg/Image[gz.msgs.Image',
-            f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/camera_info'
-            '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+    # actions.append(Node(
+    #     package='ros_gz_bridge',
+    #     executable='parameter_bridge',
+    #     name='world_cameras_bridge',
+    #     output='screen',
+    #     arguments=[
+    #         f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/image'
+    #         '@sensor_msgs/msg/Image[gz.msgs.Image',
+    #         f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/camera_info'
+    #         '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
 
-            f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/image'
-            '@sensor_msgs/msg/Image[gz.msgs.Image',
-            f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/camera_info'
-            '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+    #         f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/image'
+    #         '@sensor_msgs/msg/Image[gz.msgs.Image',
+    #         f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/camera_info'
+    #         '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
 
-            f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/image'
-            '@sensor_msgs/msg/Image[gz.msgs.Image',
-            f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/camera_info'
-            '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-        ],
-        remappings=[
-            (
-                f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/image',
-                '/world_camera_1/image_raw',
-            ),
-            (
-                f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/camera_info',
-                '/world_camera_1/camera_info',
-            ),
+    #         f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/image'
+    #         '@sensor_msgs/msg/Image[gz.msgs.Image',
+    #         f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/camera_info'
+    #         '@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+    #     ],
+    #     remappings=[
+    #         (
+    #             f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/image',
+    #             '/world_camera_1/image_raw',
+    #         ),
+    #         (
+    #             f'/world/{world_name}/model/world_camera_1/link/link/sensor/camera/camera_info',
+    #             '/world_camera_1/camera_info',
+    #         ),
 
-            (
-                f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/image',
-                '/world_camera_2/image_raw',
-            ),
-            (
-                f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/camera_info',
-                '/world_camera_2/camera_info',
-            ),
+    #         (
+    #             f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/image',
+    #             '/world_camera_2/image_raw',
+    #         ),
+    #         (
+    #             f'/world/{world_name}/model/world_camera_2/link/link/sensor/camera/camera_info',
+    #             '/world_camera_2/camera_info',
+    #         ),
 
-            (
-                f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/image',
-                '/world_camera_3/image_raw',
-            ),
-            (
-                f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/camera_info',
-                '/world_camera_3/camera_info',
-            ),
-        ],
-    ))
-    """
+    #         (
+    #             f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/image',
+    #             '/world_camera_3/image_raw',
+    #         ),
+    #         (
+    #             f'/world/{world_name}/model/world_camera_3/link/link/sensor/camera/camera_info',
+    #             '/world_camera_3/camera_info',
+    #         ),
+    #     ],
+    # ))
 
     return LaunchDescription(actions)

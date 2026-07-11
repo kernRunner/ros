@@ -1,3 +1,6 @@
+# Accumulates all robot 3D lidar clouds into one voxel-filtered global PointCloud2 map.
+# RViz: Fixed Frame = world, add PointCloud2 topic /swarm/map_3d
+
 import math
 from typing import Dict, List, Tuple
 
@@ -15,17 +18,6 @@ from tf2_ros import TransformException
 
 
 class Swarm3DCloudMapper(Node):
-    """
-    Accumulates /robotX/points into one global 3D PointCloud2 map.
-
-    Output:
-      /swarm/map_3d
-
-    RViz:
-      Fixed Frame: world
-      Add -> PointCloud2 -> /swarm/map_3d
-    """
-
     def __init__(self):
         super().__init__('swarm_3d_cloud_mapper')
 
@@ -41,27 +33,16 @@ class Swarm3DCloudMapper(Node):
         self.declare_parameter('fixed_frame', 'world')
         self.declare_parameter('map_topic', '/swarm/map_3d')
 
-        # Voxel size controls map density.
-        # Smaller = prettier but slower/heavier.
         self.declare_parameter('voxel_size', 0.15)
-
-        # Keep map bounded so RViz and ROS do not get overloaded.
         self.declare_parameter('max_voxels', 250000)
-
-        # Publish accumulated map at this rate.
         self.declare_parameter('publish_rate_hz', 1.0)
 
-        # Point filtering in sensor frame before transform.
         self.declare_parameter('range_min', 0.35)
         self.declare_parameter('range_max', 8.0)
 
-        # Point filtering after transform into world.
-        # Useful to remove crazy points under/above the terrain.
         self.declare_parameter('world_z_min', -3.0)
         self.declare_parameter('world_z_max', 8.0)
 
-        # Process at most this many points from each incoming cloud.
-        # 0 means process all.
         self.declare_parameter('max_points_per_cloud', 2500)
 
         self.robot_names: List[str] = list(self.get_parameter('robot_names').value)
@@ -86,7 +67,6 @@ class Swarm3DCloudMapper(Node):
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        # voxel key -> world point at voxel center / first observed point
         self.voxels: Dict[Tuple[int, int, int], Tuple[float, float, float]] = {}
 
         self.map_pub = self.create_publisher(
@@ -114,6 +94,7 @@ class Swarm3DCloudMapper(Node):
         )
 
     def cloud_callback(self, msg: PointCloud2, robot_name: str):
+        # Transforms one robot cloud into the world frame and adds it to the map.
         source_frame = msg.header.frame_id
 
         if not source_frame:
@@ -141,7 +122,6 @@ class Swarm3DCloudMapper(Node):
         seen = 0
         step = 1
 
-        # If cloud is huge, stride through it instead of processing all points.
         if self.max_points_per_cloud > 0 and msg.width * msg.height > self.max_points_per_cloud:
             total = max(1, msg.width * msg.height)
             step = max(1, total // self.max_points_per_cloud)
@@ -185,6 +165,7 @@ class Swarm3DCloudMapper(Node):
             self.trim_voxels()
 
     def voxel_key(self, x: float, y: float, z: float) -> Tuple[int, int, int]:
+        # Converts a world point into a voxel grid index.
         return (
             int(math.floor(x / self.voxel_size)),
             int(math.floor(y / self.voxel_size)),
@@ -192,8 +173,7 @@ class Swarm3DCloudMapper(Node):
         )
 
     def trim_voxels(self):
-        # Simple trim: keep the newest-ish insertion order tail.
-        # Python dict preserves insertion order.
+        # Removes old voxels when the map gets too large.
         overflow = len(self.voxels) - self.max_voxels
 
         if overflow <= 0:
@@ -207,6 +187,7 @@ class Swarm3DCloudMapper(Node):
         )
 
     def publish_map(self):
+        # Publishes the accumulated voxel map.
         if not self.voxels:
             return
 
@@ -244,6 +225,7 @@ class Swarm3DCloudMapper(Node):
         self.map_pub.publish(msg)
 
     def quaternion_to_matrix(self, x: float, y: float, z: float, w: float):
+        # Converts a quaternion into a 3D rotation matrix.
         xx = x * x
         yy = y * y
         zz = z * z

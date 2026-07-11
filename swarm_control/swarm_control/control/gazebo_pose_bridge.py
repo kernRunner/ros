@@ -1,3 +1,4 @@
+# Reads robot poses from Gazebo and republishes each one as a /robotX/ground_truth_pose topic for the swarm nodes.
 import rclpy
 from rclpy.node import Node
 
@@ -9,10 +10,13 @@ class GazeboPoseBridge(Node):
     def __init__(self):
         super().__init__('gazebo_pose_bridge')
 
+        # Gazebo topic that contains all dynamic model poses.
         self.declare_parameter(
             'gazebo_pose_topic',
             '/world/tree_exploration_test/dynamic_pose/info',
         )
+
+        # Robots that should receive ground-truth pose topics.
         self.declare_parameter(
             'robot_names',
             ['robot1', 'robot2', 'robot3', 'robot4'],
@@ -21,6 +25,7 @@ class GazeboPoseBridge(Node):
         self.gazebo_pose_topic = self.get_parameter('gazebo_pose_topic').value
         self.robot_names = list(self.get_parameter('robot_names').value)
 
+        # One publisher per robot.
         self.pose_pubs = {
             name: self.create_publisher(
                 PoseStamped,

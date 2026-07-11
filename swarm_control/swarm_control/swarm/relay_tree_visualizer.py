@@ -1,3 +1,5 @@
+# Visualizes the relay-tree structure in RViz using robot, text, and link markers.
+
 import math
 import re
 from typing import Dict, Tuple
@@ -13,40 +15,17 @@ from swarm_interfaces.msg import RobotState
 
 
 class RelayTreeVisualizer(Node):
-    """
-    RViz marker visualizer for the relay-tree exploration state.
-
-    Subscribes:
-      /swarm/robot_states
-
-    Publishes:
-      /swarm/relay_tree_markers
-
-    Visualizes:
-      - root relay
-      - relay robots
-      - group leaders
-      - group followers
-      - parent-relay links
-      - leader-follower links
-      - text labels with role/group info
-    """
-
     def __init__(self):
         super().__init__('relay_tree_visualizer')
 
-        self._declare_parameters()
-        self._read_parameters()
-        self._init_state()
-        self._init_ros_interfaces()
+        self.declare_parameters()
+        self.read_parameters()
+        self.init_state()
+        self.init_ros_interfaces()
 
         self.get_logger().info('[relay_tree_visualizer] started')
 
-    # ------------------------------------------------------------------
-    # Parameters
-    # ------------------------------------------------------------------
-
-    def _declare_parameters(self):
+    def declare_parameters(self):
         self.declare_parameter('state_topic', '/swarm/robot_states')
         self.declare_parameter('marker_topic', '/swarm/relay_tree_markers')
         self.declare_parameter('frame_id', 'world')
@@ -62,7 +41,7 @@ class RelayTreeVisualizer(Node):
         self.declare_parameter('show_parent_relay_links', True)
         self.declare_parameter('show_text_labels', True)
 
-    def _read_parameters(self):
+    def read_parameters(self):
         self.state_topic = self.get_parameter('state_topic').value
         self.marker_topic = self.get_parameter('marker_topic').value
         self.frame_id = self.get_parameter('frame_id').value
@@ -86,15 +65,11 @@ class RelayTreeVisualizer(Node):
         )
         self.show_text_labels = bool(self.get_parameter('show_text_labels').value)
 
-    # ------------------------------------------------------------------
-    # Initialization
-    # ------------------------------------------------------------------
-
-    def _init_state(self):
+    def init_state(self):
         self.states: Dict[str, RobotState] = {}
         self.last_seen_ns: Dict[str, int] = {}
 
-    def _init_ros_interfaces(self):
+    def init_ros_interfaces(self):
         self.create_subscription(
             RobotState,
             self.state_topic,
@@ -110,25 +85,17 @@ class RelayTreeVisualizer(Node):
 
         self.create_timer(1.0 / self.publish_rate_hz, self.publish_markers)
 
-    # ------------------------------------------------------------------
-    # Callbacks
-    # ------------------------------------------------------------------
-
     def state_callback(self, msg: RobotState):
         self.states[msg.robot_name] = msg
         self.last_seen_ns[msg.robot_name] = self.get_clock().now().nanoseconds
 
-    # ------------------------------------------------------------------
-    # Marker publishing
-    # ------------------------------------------------------------------
-
     def publish_markers(self):
+        # Builds the full marker array for the current relay tree.
         now = self.get_clock().now()
-        active_states = self._active_recent_states(now.nanoseconds)
+        active_states = self.active_recent_states(now.nanoseconds)
 
         marker_array = MarkerArray()
 
-        # Clear old markers first. This avoids stale labels/lines when roles change.
         delete_all = Marker()
         delete_all.action = Marker.DELETEALL
         marker_array.markers.append(delete_all)
@@ -139,13 +106,13 @@ class RelayTreeVisualizer(Node):
             state = active_states[name]
 
             marker_array.markers.append(
-                self._robot_marker(marker_id, state, now)
+                self.robot_marker(marker_id, state, now)
             )
             marker_id += 1
 
             if self.show_text_labels:
                 marker_array.markers.append(
-                    self._text_marker(marker_id, state, now)
+                    self.text_marker(marker_id, state, now)
                 )
                 marker_id += 1
 
@@ -157,19 +124,17 @@ class RelayTreeVisualizer(Node):
                 if not parent_name or parent_name not in active_states:
                     continue
 
-                # Draw parent relay links for relays and group leaders.
-                # This shows the relay-tree backbone without too much clutter.
                 if state.role not in ('relay', 'group_leader'):
                     continue
 
                 marker_array.markers.append(
-                    self._line_marker(
+                    self.line_marker(
                         marker_id,
                         active_states[parent_name],
                         state,
                         now,
                         namespace='parent_relay_links',
-                        color=self._color_parent_link(),
+                        color=self.color_parent_link(),
                         z_offset=0.16,
                     )
                 )
@@ -188,13 +153,13 @@ class RelayTreeVisualizer(Node):
                     continue
 
                 marker_array.markers.append(
-                    self._line_marker(
+                    self.line_marker(
                         marker_id,
                         active_states[leader_name],
                         state,
                         now,
                         namespace='leader_follower_links',
-                        color=self._color_follower_link(),
+                        color=self.color_follower_link(),
                         z_offset=0.08,
                     )
                 )
@@ -202,9 +167,9 @@ class RelayTreeVisualizer(Node):
 
         self.marker_pub.publish(marker_array)
 
-    def _active_recent_states(self, now_ns: int) -> Dict[str, RobotState]:
+    def active_recent_states(self, now_ns: int) -> Dict[str, RobotState]:
+        # Keeps only active robots with fresh state messages.
         recent = {}
-
         timeout_ns = int(self.state_timeout_sec * 1e9)
 
         for name, state in self.states.items():
@@ -220,11 +185,7 @@ class RelayTreeVisualizer(Node):
 
         return recent
 
-    # ------------------------------------------------------------------
-    # Marker builders
-    # ------------------------------------------------------------------
-
-    def _base_marker(self, marker_id: int, namespace: str, now) -> Marker:
+    def base_marker(self, marker_id: int, namespace: str, now) -> Marker:
         marker = Marker()
         marker.header.frame_id = self.frame_id
         marker.header.stamp = now.to_msg()
@@ -235,8 +196,8 @@ class RelayTreeVisualizer(Node):
         marker.lifetime.nanosec = 0
         return marker
 
-    def _robot_marker(self, marker_id: int, state: RobotState, now) -> Marker:
-        marker = self._base_marker(marker_id, 'relay_tree_robots', now)
+    def robot_marker(self, marker_id: int, state: RobotState, now) -> Marker:
+        marker = self.base_marker(marker_id, 'relay_tree_robots', now)
 
         marker.type = Marker.SPHERE
         marker.pose.position.x = state.x
@@ -249,11 +210,11 @@ class RelayTreeVisualizer(Node):
         marker.scale.y = scale
         marker.scale.z = scale
 
-        marker.color = self._role_color(state)
+        marker.color = self.role_color(state)
         return marker
 
-    def _text_marker(self, marker_id: int, state: RobotState, now) -> Marker:
-        marker = self._base_marker(marker_id, 'relay_tree_labels', now)
+    def text_marker(self, marker_id: int, state: RobotState, now) -> Marker:
+        marker = self.base_marker(marker_id, 'relay_tree_labels', now)
 
         marker.type = Marker.TEXT_VIEW_FACING
         marker.pose.position.x = state.x
@@ -262,7 +223,7 @@ class RelayTreeVisualizer(Node):
         marker.pose.orientation.w = 1.0
 
         marker.scale.z = self.text_height
-        marker.color = self._color_white()
+        marker.color = self.color_white()
 
         tree_id = self.tree_id_for_robot(state.robot_name)
         short_name = state.robot_name.replace('robot', 'r')
@@ -281,7 +242,7 @@ class RelayTreeVisualizer(Node):
 
         return marker
 
-    def _line_marker(
+    def line_marker(
         self,
         marker_id: int,
         state_a: RobotState,
@@ -291,7 +252,8 @@ class RelayTreeVisualizer(Node):
         color: ColorRGBA,
         z_offset: float,
     ) -> Marker:
-        marker = self._base_marker(marker_id, namespace, now)
+        # Creates one line between two robots.
+        marker = self.base_marker(marker_id, namespace, now)
 
         marker.type = Marker.LINE_LIST
         marker.scale.x = self.line_width
@@ -312,45 +274,37 @@ class RelayTreeVisualizer(Node):
 
         return marker
 
-    # ------------------------------------------------------------------
-    # Colors
-    # ------------------------------------------------------------------
-
-    def _role_color(self, state: RobotState) -> ColorRGBA:
+    def role_color(self, state: RobotState) -> ColorRGBA:
         if state.role == 'root_relay':
-            return self._rgba(0.80, 0.15, 0.90, 1.0)  # purple
+            return self.rgba(0.80, 0.15, 0.90, 1.0)
 
         if state.role == 'relay':
-            return self._rgba(0.15, 0.55, 1.00, 1.0)  # blue
+            return self.rgba(0.15, 0.55, 1.00, 1.0)
 
         if state.role in ('leader', 'group_leader'):
-            return self._rgba(0.10, 0.90, 0.20, 1.0)  # green
+            return self.rgba(0.10, 0.90, 0.20, 1.0)
 
         if state.role in ('follower', 'group_follower'):
-            return self._rgba(1.00, 0.75, 0.10, 1.0)  # yellow/orange
+            return self.rgba(1.00, 0.75, 0.10, 1.0)
 
-        return self._rgba(0.80, 0.80, 0.80, 1.0)
+        return self.rgba(0.80, 0.80, 0.80, 1.0)
 
-    def _color_parent_link(self) -> ColorRGBA:
-        return self._rgba(0.40, 0.70, 1.00, 0.90)
+    def color_parent_link(self) -> ColorRGBA:
+        return self.rgba(0.40, 0.70, 1.00, 0.90)
 
-    def _color_follower_link(self) -> ColorRGBA:
-        return self._rgba(0.90, 0.90, 0.90, 0.60)
+    def color_follower_link(self) -> ColorRGBA:
+        return self.rgba(0.90, 0.90, 0.90, 0.60)
 
-    def _color_white(self) -> ColorRGBA:
-        return self._rgba(1.0, 1.0, 1.0, 1.0)
+    def color_white(self) -> ColorRGBA:
+        return self.rgba(1.0, 1.0, 1.0, 1.0)
 
-    def _rgba(self, r: float, g: float, b: float, a: float) -> ColorRGBA:
+    def rgba(self, r: float, g: float, b: float, a: float) -> ColorRGBA:
         color = ColorRGBA()
         color.r = float(r)
         color.g = float(g)
         color.b = float(b)
         color.a = float(a)
         return color
-
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
 
     def robot_number(self, name: str) -> int:
         match = re.search(r'\d+', name)
@@ -366,6 +320,7 @@ class RelayTreeVisualizer(Node):
             return 'B'
 
         return '?'
+
 
 def main(args=None):
     rclpy.init(args=args)

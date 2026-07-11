@@ -1,3 +1,5 @@
+# Converts odometry messages into TF transforms.
+
 import rclpy
 from rclpy.node import Node
 
@@ -10,27 +12,27 @@ class OdomToTF(Node):
     def __init__(self):
         super().__init__('odom_to_tf')
 
-        self._declare_parameters()
-        self._read_parameters()
-        self._init_ros_interfaces()
+        self.declare_parameters()
+        self.read_parameters()
+        self.init_ros_interfaces()
 
         self.get_logger().info(
             f'[{self.robot_name}] TF: {self.odom_frame} -> {self.base_frame}'
         )
 
-    def _declare_parameters(self):
+    def declare_parameters(self):
         self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('odom_topic', 'odom')
         self.declare_parameter('base_frame', 'chassis')
         self.declare_parameter('odom_frame', 'odom')
 
-    def _read_parameters(self):
+    def read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.base_frame = self.get_parameter('base_frame').value
         self.odom_frame = self.get_parameter('odom_frame').value
 
-    def _init_ros_interfaces(self):
+    def init_ros_interfaces(self):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.create_subscription(
@@ -41,10 +43,11 @@ class OdomToTF(Node):
         )
 
     def odom_callback(self, msg: Odometry):
-        transform = self._odom_to_transform(msg)
+        transform = self.odom_to_transform(msg)
         self.tf_broadcaster.sendTransform(transform)
 
-    def _odom_to_transform(self, msg: Odometry) -> TransformStamped:
+    def odom_to_transform(self, msg: Odometry) -> TransformStamped:
+        # Copies odometry pose into a TF transform.
         transform = TransformStamped()
 
         transform.header.stamp = msg.header.stamp

@@ -1,3 +1,5 @@
+# Converts each robot's ground-truth pose into a TF transform.
+
 import rclpy
 from rclpy.node import Node
 
@@ -9,6 +11,7 @@ class GroundTruthToTF(Node):
     def __init__(self):
         super().__init__('ground_truth_to_tf')
 
+        # Robot and TF frame settings.
         self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('pose_topic', 'ground_truth_pose')
         self.declare_parameter('parent_frame', 'world')
@@ -21,6 +24,7 @@ class GroundTruthToTF(Node):
 
         self.tf_broadcaster = TransformBroadcaster(self)
 
+        # Reads the robot's ground-truth pose.
         self.create_subscription(
             PoseStamped,
             self.pose_topic,

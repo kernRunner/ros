@@ -1,3 +1,5 @@
+# Converts a robot's 3D lidar point cloud into a filtered 2D scan for obstacle avoidance.
+
 import math
 
 import rclpy
@@ -10,16 +12,6 @@ from swarm_interfaces.msg import RobotState
 
 
 class TerrainScanFilter(Node):
-    """
-    Converts 3D lidar PointCloud2 into a filtered 2D LaserScan.
-
-    Important:
-      - Every robot may have lidar.
-      - But this node only processes point clouds when this robot is currently
-        leader / group_leader.
-      - Followers and relays do not spend CPU filtering point clouds.
-    """
-
     def __init__(self):
         super().__init__('terrain_scan_filter')
 
@@ -36,15 +28,10 @@ class TerrainScanFilter(Node):
         self.declare_parameter('range_min', 0.40)
         self.declare_parameter('range_max', 7.0)
 
-        # z is relative to lidar_3d frame.
-        # Keep only objects around lidar height and above.
         self.declare_parameter('min_obstacle_height', 0.10)
         self.declare_parameter('max_obstacle_height', 0.80)
 
-        # Ignore ground-like downward rays on slopes.
         self.declare_parameter('min_vertical_angle', -0.08)
-
-        # Ignore robot body / near self-points.
         self.declare_parameter('body_ignore_radius', 0.45)
 
         self.robot_name = self.get_parameter('robot_name').value
@@ -109,6 +96,7 @@ class TerrainScanFilter(Node):
         )
 
     def robot_state_callback(self, msg: RobotState):
+        # Enables filtering only when this robot is the active leader.
         if msg.robot_name != self.robot_name:
             return
 
@@ -128,6 +116,7 @@ class TerrainScanFilter(Node):
             )
 
     def pointcloud_callback(self, msg: PointCloud2):
+        # Filters 3D points into 2D obstacle distances.
         if not self.active:
             return
 
@@ -147,20 +136,15 @@ class TerrainScanFilter(Node):
 
             distance_xy = math.hypot(x, y)
 
-            # Ignore robot body / near self-points.
             if distance_xy < self.body_ignore_radius:
                 continue
 
             if distance_xy < self.range_min or distance_xy > self.range_max:
                 continue
 
-            # z is relative to lidar_3d frame.
-            # Ignore ground / slope points and very high points.
             if z < self.min_obstacle_height or z > self.max_obstacle_height:
                 continue
 
-            # Extra slope filter:
-            # Ground on slopes often appears as downward points.
             vertical_angle = math.atan2(z, max(distance_xy, 1e-6))
             if vertical_angle < self.min_vertical_angle:
                 continue
@@ -191,6 +175,7 @@ class TerrainScanFilter(Node):
         scan.intensities = []
 
         self.scan_pub.publish(scan)
+
 
 def main(args=None):
     rclpy.init(args=args)

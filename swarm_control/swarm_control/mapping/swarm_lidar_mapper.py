@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# Builds a shared 2D occupancy map from all robot lidar scans.
+
 import math
 
 import rclpy
@@ -25,10 +27,7 @@ class SwarmLidarMapper(Node):
         self.origin_x = -20.0
         self.origin_y = -100.0
 
-        # Log-odds-like confidence map:
-        # unknown = 0
-        # free evidence decreases value
-        # occupied evidence increases value
+        # unknown = 0, free evidence decreases, occupied evidence increases
         self.evidence = [0] * (self.width * self.height)
         self.data = [-1] * (self.width * self.height)
 
@@ -37,7 +36,6 @@ class SwarmLidarMapper(Node):
         self.min_evidence = -20
         self.max_evidence = 40
 
-        # Thresholds for publishing OccupancyGrid
         self.free_threshold = -2
         self.occupied_threshold = 8
 
@@ -60,6 +58,7 @@ class SwarmLidarMapper(Node):
         self.get_logger().info('Swarm lidar mapper started, publishing /swarm/map')
 
     def world_to_cell(self, x, y):
+        # Converts world coordinates to map cell coordinates.
         mx = int((x - self.origin_x) / self.resolution)
         my = int((y - self.origin_y) / self.resolution)
 
@@ -72,6 +71,7 @@ class SwarmLidarMapper(Node):
         return my * self.width + mx
 
     def add_evidence(self, mx, my, delta):
+        # Adds free or occupied evidence to one cell.
         if mx < 0 or mx >= self.width or my < 0 or my >= self.height:
             return
 
@@ -92,6 +92,7 @@ class SwarmLidarMapper(Node):
         self.add_evidence(mx, my, self.occupied_increment)
 
     def mark_ray(self, x0, y0, x1, y1, occupied):
+        # Marks cells along a lidar ray as free, then marks the endpoint.
         start = self.world_to_cell(x0, y0)
         end = self.world_to_cell(x1, y1)
 
@@ -116,7 +117,6 @@ class SwarmLidarMapper(Node):
             if x == x1c and y == y1c:
                 break
 
-            # Ray passed through this cell, so it is free.
             self.mark_free(x, y)
 
             e2 = 2 * err
@@ -128,18 +128,18 @@ class SwarmLidarMapper(Node):
                 y += sy
 
         if occupied:
-            # End point is a hit, so likely occupied.
             self.mark_occupied(x1c, y1c)
         else:
-            # Max-range ray ended with no hit, so endpoint is also free.
             self.mark_free(x1c, y1c)
 
     def yaw_from_quaternion(self, q):
+        # Converts quaternion orientation to yaw angle.
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     def scan_callback(self, msg: LaserScan):
+        # Adds one lidar scan into the shared occupancy map.
         try:
             tf = self.tf_buffer.lookup_transform(
                 'world',
@@ -176,6 +176,7 @@ class SwarmLidarMapper(Node):
             angle += msg.angle_increment
 
     def rebuild_occupancy_grid(self):
+        # Converts evidence values into OccupancyGrid values.
         for idx, value in enumerate(self.evidence):
             if value >= self.occupied_threshold:
                 self.data[idx] = 100
@@ -185,6 +186,7 @@ class SwarmLidarMapper(Node):
                 self.data[idx] = -1
 
     def publish_map(self):
+        # Publishes the current shared map.
         self.rebuild_occupancy_grid()
 
         msg = OccupancyGrid()

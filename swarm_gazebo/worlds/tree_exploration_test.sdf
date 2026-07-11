@@ -1,3 +1,5 @@
+<!-- Gazebo world for the Mars swarm exploration simulation. -->
+
 <?xml version="1.0" ?>
 
 <sdf version="1.8">
@@ -34,8 +36,9 @@
       <direction>-0.45 0.25 -0.86</direction>
     </light>
 
-    <!-- World camera 1: lower, more toward horizon -->
-    <model name="world_camera_1">
+    <!-- Cameras are only used to record video of the simulation from a specific angle -->
+    <!-- World camera 1 -->
+    <!-- <model name="world_camera_1">
       <static>true</static>
       <pose>-6 0 4.5 0 0.30 0</pose>
 
@@ -59,10 +62,10 @@
           </camera>
         </sensor>
       </link>
-    </model>
+    </model> -->
 
-    <!-- World camera 2: low side/front angle, moved lower in Y -->
-    <model name="world_camera_2">
+    <!-- World camera 2 -->
+    <!-- <model name="world_camera_2">
       <static>true</static>
       <pose>11.475773 3.019825 0.978149 0 0.179944 -2.425576</pose>
 
@@ -86,10 +89,10 @@
           </camera>
         </sensor>
       </link>
-    </model>
+    </model> -->
 
-    <!-- World camera 3: far high overview -->
-    <model name="world_camera_3">
+    <!-- World camera 3 -->
+    <!-- <model name="world_camera_3">
       <static>true</static>
       <pose>33.979637 -1.392795 12.901139 0 1.285681 1.747069</pose>
 
@@ -113,7 +116,7 @@
           </camera>
         </sensor>
       </link>
-    </model>
+    </model> -->
 
     <!-- Mars terrain model -->
     <model name="mars_gale_crater_patch1">
@@ -149,7 +152,7 @@
         </surface>
       </collision>
 
-        <!-- Solid base terrain underneath the textured visual -->
+        <!-- Solid base terrain underneath the textured visual because of unexpected flikering in the texture-->
         <visual name="base_color_visual">
           <cast_shadows>false</cast_shadows>
           <pose>0 0 -0.02 0 0 0</pose>
@@ -168,7 +171,7 @@
           </material>
         </visual>
 
-        <!-- Textured terrain on top -->
+        <!-- Textured terrain -->
         <visual name="visual">
           <cast_shadows>true</cast_shadows>
           <pose>0 0 0.01 0 0 0</pose>
@@ -195,30 +198,8 @@
           </material>
         </visual>
 
-        <!-- Tiny helper visual -->
-        <visual name="keep_alive_visual">
-          <pose>0 0 0.05 0 0 0</pose>
-          <geometry>
-            <sphere>
-              <radius>0.01</radius>
-            </sphere>
-          </geometry>
-          <material>
-            <ambient>1 1 1 1</ambient>
-            <diffuse>1 1 1 1</diffuse>
-            <specular>0 0 0 1</specular>
-            <emissive>1 1 1 1</emissive>
-          </material>
-        </visual>
-
       </link>
     </model>
-
-    <!-- Rock / obstacle field -->
-    <include>
-      <uri>model://mars_rock_field</uri>
-      <pose>0 0 0 0 0 0</pose>
-    </include>
 
     <!-- Sky dome background -->
     <include>

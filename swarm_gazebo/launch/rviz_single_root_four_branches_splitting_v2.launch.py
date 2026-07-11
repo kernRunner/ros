@@ -1,3 +1,5 @@
+# Launches an RViz-only relay-tree demo with one root relay and four branches.
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -5,21 +7,6 @@ import os
 
 
 def generate_launch_description():
-    # RViz-only, no Gazebo:
-    #
-    # One shared root relay:
-    #   robot18
-    #
-    # Four initial coverage branches:
-    #   Group A leader robot1,  heading -90 deg
-    #   Group B leader robot5,  heading 180 deg
-    #   Group C leader robot9,  heading 0 deg
-    #   Group D leader robot13, heading 90 deg
-    #
-    # This version allows second-level split visualization with 18 robots by using:
-    #   min_group_size_to_split = 2
-    #   max_branch_depth = 3
-
     heading_a_deg = -90.0
     heading_b_deg = 180.0
     heading_c_deg = 0.0
@@ -76,11 +63,9 @@ def generate_launch_description():
             {'group_d_center_x': 0.0},
             {'group_d_center_y': 1.7},
 
-            # Faster demo splitting.
+            # Small demo values make branch splitting visible quickly in RViz.
             {'split_distance_m': 2.5},
             {'branch_angle_deg': 28.0},
-
-            # Critical for second split with only 18 robots.
             {'min_group_size_to_split': 2},
             {'max_branch_depth': 3},
             {'min_group_age_before_split_sec': 3.0},

@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+# Runs an RViz-only mock swarm with one root relay and four branches that can split.
+
 import math
 from typing import Dict, List, Tuple
 
@@ -9,6 +10,7 @@ from swarm_interfaces.msg import RobotState
 
 
 def wrap_angle(a: float) -> float:
+    # Keeps angles between -pi and pi.
     while a > math.pi:
         a -= 2.0 * math.pi
     while a < -math.pi:
@@ -17,6 +19,7 @@ def wrap_angle(a: float) -> float:
 
 
 class Branch:
+    # Stores the robots and metadata for one active branch.
     def __init__(
         self,
         group_id: str,
@@ -45,44 +48,31 @@ class Branch:
 
 
 class MockSingleRootFourBranchesSplitting(Node):
-    """
-    RViz-only kinematic mock for one shared root relay and four coverage branches.
-
-    Publishes:
-      /swarm/robot_states
-
-    No Gazebo.
-    No relay managers.
-    No role-assignment topics.
-
-    Unlike the simple mock, this version DOES split:
-      - Each active branch leader drives forward.
-      - Once a branch travels split_distance_m, its tail robot becomes a relay.
-      - The remaining robots split into left/right child branches.
-      - All branches still share one root relay: robot18.
-    """
 
     def __init__(self):
         super().__init__('mock_single_root_four_branches_splitting')
 
+        # ROS topics and update rate.
         self.declare_parameter('state_topic', '/swarm/robot_states')
         self.declare_parameter('publish_rate_hz', 10.0)
 
+        # Simple kinematic movement settings.
         self.declare_parameter('forward_speed', 0.08)
         self.declare_parameter('follow_speed', 0.13)
         self.declare_parameter('follow_distance_m', 0.95)
         self.declare_parameter('snap_distance_m', 0.08)
 
+        # Initial branch layout.
         self.declare_parameter('initial_chain_spacing_m', 0.78)
         self.declare_parameter('initial_lateral_spacing_m', 0.28)
 
-        # Your coverage headings.
+        # Coverage headings for the four starting branches.
         self.declare_parameter('heading_a_deg', -90.0)
         self.declare_parameter('heading_b_deg', 180.0)
         self.declare_parameter('heading_c_deg', 0.0)
         self.declare_parameter('heading_d_deg', 90.0)
 
-        # Shared root.
+        # Shared root relay position.
         self.declare_parameter('root_x', 0.0)
         self.declare_parameter('root_y', 0.0)
 
@@ -165,6 +155,7 @@ class MockSingleRootFourBranchesSplitting(Node):
             + [self.root_robot]
         )
 
+        # Internal mock state.
         self.pose: Dict[str, Tuple[float, float, float]] = {}
         self.relay_robots = set()
         self.relay_parent_by_robot: Dict[str, str] = {}
@@ -173,17 +164,19 @@ class MockSingleRootFourBranchesSplitting(Node):
         self.group_by_robot: Dict[str, str] = {}
         self.next_group_index = 0
 
-        self._init_heading_chain(self.initial_group_a, ax, ay, self.heading_a_deg)
-        self._init_heading_chain(self.initial_group_b, bx, by, self.heading_b_deg)
-        self._init_heading_chain(self.initial_group_c, cx, cy, self.heading_c_deg)
-        self._init_heading_chain(self.initial_group_d, dx, dy, self.heading_d_deg)
+        # Place the starting branches.
+        self.place_robot_chain(self.initial_group_a, ax, ay, self.heading_a_deg)
+        self.place_robot_chain(self.initial_group_b, bx, by, self.heading_b_deg)
+        self.place_robot_chain(self.initial_group_c, cx, cy, self.heading_c_deg)
+        self.place_robot_chain(self.initial_group_d, dx, dy, self.heading_d_deg)
         self.pose[self.root_robot] = (root_x, root_y, 0.0)
 
+        # Register the starting branches.
         now_sec = 0.0
-        self._add_initial_branch('A', self.initial_group_a, self.heading_a_deg, now_sec)
-        self._add_initial_branch('B', self.initial_group_b, self.heading_b_deg, now_sec)
-        self._add_initial_branch('C', self.initial_group_c, self.heading_c_deg, now_sec)
-        self._add_initial_branch('D', self.initial_group_d, self.heading_d_deg, now_sec)
+        self.register_initial_branch('A', self.initial_group_a, self.heading_a_deg, now_sec)
+        self.register_initial_branch('B', self.initial_group_b, self.heading_b_deg, now_sec)
+        self.register_initial_branch('C', self.initial_group_c, self.heading_c_deg, now_sec)
+        self.register_initial_branch('D', self.initial_group_d, self.heading_d_deg, now_sec)
 
         self.state_pub = self.create_publisher(RobotState, self.state_topic, 10)
 
@@ -196,16 +189,18 @@ class MockSingleRootFourBranchesSplitting(Node):
             f'root={self.root_robot}, split_distance={self.split_distance_m:.1f}m'
         )
 
-    def _elapsed_sec(self) -> float:
+    def get_elapsed_time_sec(self) -> float:
+        # Returns mock runtime in seconds.
         return (self.get_clock().now().nanoseconds - self.start_ns) / 1e9
 
-    def _add_initial_branch(
+    def register_initial_branch(
         self,
         group_id: str,
         robots: List[str],
         heading_deg: float,
         created_time_sec: float,
     ):
+        # Registers one starting branch and assigns its robots to that group.
         leader = robots[0]
         lx, ly, _ = self.pose[leader]
         branch = Branch(
@@ -223,13 +218,14 @@ class MockSingleRootFourBranchesSplitting(Node):
         for r in robots:
             self.group_by_robot[r] = group_id
 
-    def _init_heading_chain(
+    def place_robot_chain(
         self,
         names: List[str],
         cx: float,
         cy: float,
         heading_deg: float,
     ):
+        # Places a small robot chain around a center point and heading.
         heading = math.radians(heading_deg)
 
         forward_x = math.cos(heading)
@@ -259,20 +255,21 @@ class MockSingleRootFourBranchesSplitting(Node):
             self.pose[name] = (x, y, yaw)
 
     def tick(self):
+        # Updates movement, checks splitting, and publishes all robot states.
         now = self.get_clock().now()
         now_ns = now.nanoseconds
 
         dt = max(0.001, min(0.2, (now_ns - self.last_update_ns) / 1e9))
         self.last_update_ns = now_ns
 
-        self._update_positions(dt)
-        self._maybe_split_branches()
+        self.move_mock_robots(dt)
+        self.check_for_branch_splits()
 
         for name in self.robots:
-            self.state_pub.publish(self._make_state(name, now))
+            self.state_pub.publish(self.create_robot_state(name, now))
 
-    def _update_positions(self, dt: float):
-        # Move active branch leaders.
+    def move_mock_robots(self, dt: float):
+        # Moves leaders forward and lets followers chase their branch leader.
         for branch in list(self.branches.values()):
             if not branch.robots:
                 continue
@@ -286,7 +283,6 @@ class MockSingleRootFourBranchesSplitting(Node):
             yaw = heading
             self.pose[leader] = (x, y, yaw)
 
-        # Followers chase their current branch leader.
         for branch in list(self.branches.values()):
             leader = branch.leader
             if not leader:
@@ -323,8 +319,9 @@ class MockSingleRootFourBranchesSplitting(Node):
         rx, ry, _ = self.pose[self.root_robot]
         self.pose[self.root_robot] = (rx, ry, 0.0)
 
-    def _maybe_split_branches(self):
-        elapsed = self._elapsed_sec()
+    def check_for_branch_splits(self):
+        # Finds branches that are old enough, large enough, and far enough to split.
+        elapsed = self.get_elapsed_time_sec()
         split_candidates = []
 
         for group_id, branch in self.branches.items():
@@ -348,9 +345,10 @@ class MockSingleRootFourBranchesSplitting(Node):
 
         for group_id in split_candidates:
             if group_id in self.branches:
-                self._split_branch(group_id)
+                self.split_branch(group_id)
 
-    def _split_branch(self, group_id: str):
+    def split_branch(self, group_id: str):
+        # Turns the tail robot into a relay and creates child branches.
         branch = self.branches.get(group_id)
         if branch is None:
             return
@@ -358,7 +356,6 @@ class MockSingleRootFourBranchesSplitting(Node):
         if len(branch.robots) < self.min_group_size_to_split:
             return
 
-        # Tail robot becomes relay.
         relay_robot = branch.robots[-1]
         remaining = branch.robots[:-1]
 
@@ -370,14 +367,12 @@ class MockSingleRootFourBranchesSplitting(Node):
         self.relay_parent_by_robot[relay_robot] = branch.parent_relay_id
         self.relay_depth_by_robot[relay_robot] = branch.depth
 
-        relay_x, relay_y, _ = self.pose[relay_robot]
-
         # Split remaining robots into left/right child branches.
         split_index = max(1, len(remaining) // 2)
         left_robots = remaining[:split_index]
         right_robots = remaining[split_index:]
 
-        # If only one child exists, just continue it straight.
+        # Remove the old branch before adding its children.
         del self.branches[group_id]
 
         child_specs = []
@@ -405,7 +400,7 @@ class MockSingleRootFourBranchesSplitting(Node):
                 depth=branch.depth + 1,
                 start_x=lx,
                 start_y=ly,
-                created_time_sec=self._elapsed_sec(),
+                created_time_sec=self.get_elapsed_time_sec(),
             )
 
             self.branches[child_id] = child
@@ -417,11 +412,13 @@ class MockSingleRootFourBranchesSplitting(Node):
             f'children={[gid for gid in self.branches.keys() if gid.startswith(group_id + "_")]}'
         )
 
-    def _branch_for_robot(self, name: str):
+    def get_robot_branch(self, name: str):
+        # Returns the active branch that a robot belongs to.
         gid = self.group_by_robot.get(name, '')
         return self.branches.get(gid)
 
-    def _make_state(self, name: str, now) -> RobotState:
+    def create_robot_state(self, name: str, now) -> RobotState:
+        # Builds the RobotState message for one robot.
         x, y, yaw = self.pose[name]
 
         msg = RobotState()
@@ -459,7 +456,7 @@ class MockSingleRootFourBranchesSplitting(Node):
             msg.is_group_leader = False
             return msg
 
-        branch = self._branch_for_robot(name)
+        branch = self.get_robot_branch(name)
 
         if branch is None:
             msg.role = 'idle'

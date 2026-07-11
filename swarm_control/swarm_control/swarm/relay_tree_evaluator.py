@@ -1,3 +1,5 @@
+# Evaluates the relay-tree structure and publishes JSON, text, and RViz summaries.
+
 import json
 import math
 from typing import Dict, List
@@ -12,23 +14,11 @@ from swarm_interfaces.msg import RobotState
 
 
 class RelayTreeEvaluator(Node):
-    """
-    Lightweight relay-tree evaluation node.
-
-    Subscribes:
-      /swarm/robot_states
-
-    Publishes:
-      /swarm/relay_tree_eval          std_msgs/String JSON summary
-      /swarm/relay_tree_eval_text     std_msgs/String human-readable summary
-      /swarm/relay_tree_eval_markers  visualization_msgs/MarkerArray RViz overlay
-    """
-
     def __init__(self):
         super().__init__('relay_tree_evaluator')
 
-        self._declare_parameters()
-        self._read_parameters()
+        self.declare_parameters()
+        self.read_parameters()
 
         self.states: Dict[str, RobotState] = {}
         self.last_seen_ns: Dict[str, int] = {}
@@ -48,7 +38,7 @@ class RelayTreeEvaluator(Node):
 
         self.get_logger().info('[relay_tree_evaluator] started')
 
-    def _declare_parameters(self):
+    def declare_parameters(self):
         self.declare_parameter('state_topic', '/swarm/robot_states')
         self.declare_parameter('eval_topic', '/swarm/relay_tree_eval')
         self.declare_parameter('text_topic', '/swarm/relay_tree_eval_text')
@@ -67,7 +57,7 @@ class RelayTreeEvaluator(Node):
         self.declare_parameter('max_recent_events_displayed', 5)
         self.declare_parameter('max_relay_link_distance_m', 30.0)
 
-    def _read_parameters(self):
+    def read_parameters(self):
         self.state_topic = str(self.get_parameter('state_topic').value)
         self.eval_topic = str(self.get_parameter('eval_topic').value)
         self.text_topic = str(self.get_parameter('text_topic').value)
@@ -95,6 +85,7 @@ class RelayTreeEvaluator(Node):
         self.last_seen_ns[msg.robot_name] = self.get_clock().now().nanoseconds
 
     def active_recent_states(self) -> Dict[str, RobotState]:
+        # Keeps only active robots with fresh state messages.
         now_ns = self.get_clock().now().nanoseconds
         timeout_ns = int(self.state_timeout_sec * 1e9)
 
@@ -130,6 +121,7 @@ class RelayTreeEvaluator(Node):
             self.publish_text_marker(text, now)
 
     def compute_summary(self, states: Dict[str, RobotState], elapsed_sec: float) -> dict:
+        # Builds the main relay-tree status summary.
         relays = []
         root_relays = []
         active_groups: Dict[str, List[str]] = {}
@@ -189,7 +181,12 @@ class RelayTreeEvaluator(Node):
             'max_relay_link_distance_m': self.max_relay_link_distance_m,
         }
 
-    def compute_relay_links(self, states: Dict[str, RobotState], leaders: Dict[str, str]) -> List[dict]:
+    def compute_relay_links(
+        self,
+        states: Dict[str, RobotState],
+        leaders: Dict[str, str],
+    ) -> List[dict]:
+        # Measures each group leader's distance to its parent relay.
         links = []
 
         for group_id, leader_name in leaders.items():
@@ -230,7 +227,13 @@ class RelayTreeEvaluator(Node):
 
         return '?'
 
-    def detect_events(self, states: Dict[str, RobotState], elapsed_sec: float, summary: dict):
+    def detect_events(
+        self,
+        states: Dict[str, RobotState],
+        elapsed_sec: float,
+        summary: dict,
+    ):
+        # Records newly created relays and groups.
         current_relays = set(summary['relays'])
         new_relays = sorted(current_relays - self.known_relays, key=self.robot_number)
 
@@ -272,6 +275,7 @@ class RelayTreeEvaluator(Node):
             self.events = self.events[-80:]
 
     def format_text(self, summary: dict) -> str:
+        # Creates the human-readable relay-tree report.
         lines = []
         status = 'OK' if summary['relay_link_ok'] else 'WARN'
 
@@ -318,6 +322,7 @@ class RelayTreeEvaluator(Node):
         return '\n'.join(lines)
 
     def publish_text_marker(self, text: str, now):
+        # Displays the relay-tree report as RViz text.
         marker_array = MarkerArray()
 
         delete_all = Marker()
