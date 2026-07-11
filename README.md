@@ -8,6 +8,9 @@ The swarm is coordinated using a relay-tree structure. Robots are assigned diffe
 
 The project combines robot control, swarm coordination, mapping, and visualization. Gazebo is used for the simulation environment, and RViz is used to display the swarm structure, robot roles, relay links, and mapping results.
 
+## GitHub Link
+https://github.com/kernRunner/ros.git
+
 ## Project Goals
 
 The main goals of this project are:
@@ -78,21 +81,6 @@ An RViz-only demo is also included. This demo does not start Gazebo. It is usefu
 ros2 launch swarm_gazebo rviz_single_root_four_branches_splitting_v2.launch.py
 ```
 
-Mission commands can be sent through the mission command topic. For example:
-
-```bash
-ros2 topic pub --once /swarm/mission_command std_msgs/msg/String "{data: explore}"
-```
-
-```bash
-ros2 topic pub --once /swarm/mission_command std_msgs/msg/String "{data: stop}"
-```
-
-```bash
-ros2 topic pub --once /swarm/mission_command std_msgs/msg/String "{data: return_home}"
-```
-
-
 ## Notes
 
 This project is designed for simulation and testing. Some parameters are tuned for demonstration in Gazebo and RViz rather than for real-world deployment.
@@ -102,3 +90,11 @@ The RViz-only demo is separate from the full Gazebo simulation and is mainly use
 ## Summary
 
 This project demonstrates how a robot swarm can be organized with a relay-tree structure during exploration. The system combines swarm role assignment, path following, mapping, and visualization to support structured multi-robot exploration in a simulated Mars-like environment.
+
+
+## Contributors: 
+Marco Huber
+Nisaanth Kulandaivel Prabu
+Grecia Barragan Paez
+Kushal Dineshbhai Munjani
+Sujana Thapa

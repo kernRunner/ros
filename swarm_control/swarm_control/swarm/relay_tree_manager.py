@@ -1,3 +1,5 @@
+# Manages relay-tree role assignments and recursive group splitting for the swarm.
+
 import json
 import math
 import re
@@ -34,24 +36,6 @@ class RelayRecord:
 
 
 class RelayTreeManager(Node):
-    """
-    Recursive relay-tree manager.
-
-    Behavior:
-      1. The physically rearmost robot becomes the root relay.
-      2. All remaining robots form group_0 behind initial_leader_name.
-      3. Each active group moves away from its parent relay.
-      4. If an active group has at least min_group_size_to_split robots and
-         its leader is split_distance_m away from its parent relay:
-           - the current rearmost robot in that group becomes a relay.
-           - all remaining robots split into left/right child groups.
-      5. Groups with fewer than min_group_size_to_split robots continue
-         exploring but do not split further.
-
-    With min_group_size_to_split = 3:
-      [A, B, C] -> C relay, A left child, B right child
-    """
-
     def __init__(self):
         super().__init__('relay_tree_manager')
 
@@ -62,10 +46,6 @@ class RelayTreeManager(Node):
 
         self.get_logger().info('[relay_tree_manager_recursive] started')
 
-    # ------------------------------------------------------------------
-    # Parameters
-    # ------------------------------------------------------------------
-
     def _declare_parameters(self):
         self.declare_parameter(
             'robot_names',
@@ -75,18 +55,10 @@ class RelayTreeManager(Node):
         self.declare_parameter('initial_heading_deg', 0.0)
         self.declare_parameter('role_assignment_topic', '/swarm/role_assignments')
 
-        # Relay selection:
-        # - 'geometry': old behavior, choose rearmost by projection along heading
-        # - 'chain_tail': choose the tail of the assigned chain/group order
         self.declare_parameter('relay_selection_mode', 'chain_tail')
         self.declare_parameter('explicit_chain_order', [''])
 
         self.declare_parameter('split_distance_m', 25.0)
-
-        # Optional split distance override:
-        # - first_split_distance_m applies to branch_depth == 1
-        # - later_split_distance_m applies to branch_depth >= 2
-        # If left <= 0, split_distance_m is used.
         self.declare_parameter('first_split_distance_m', 0.0)
         self.declare_parameter('later_split_distance_m', 0.0)
         self.declare_parameter('branch_angle_deg', 30.0)
@@ -95,20 +67,10 @@ class RelayTreeManager(Node):
         self.declare_parameter('min_group_size_to_split', 3)
         self.declare_parameter('max_branch_depth', 3)
 
-        # Prevent instant re-splitting right after a group is created.
         self.declare_parameter('min_group_age_before_split_sec', 8.0)
-
-        # Prevent split while the leader is far ahead but the follower chain is
-        # still forming. This is important for recursive groups.
         self.declare_parameter('require_group_stable_before_split', True)
         self.declare_parameter('max_pair_gap_for_split_m', 2.20)
-
-        # The robot that will become the relay must itself have moved far enough
-        # away from the parent relay. Otherwise the leader may trigger a split
-        # while the future relay is still too close to the previous relay.
         self.declare_parameter('min_relay_progress_ratio', 0.65)
-
-        # If true, groups with one robot still get role group_leader.
         self.declare_parameter('single_robot_groups_are_leaders', True)
 
     def _read_parameters(self):
@@ -169,10 +131,6 @@ class RelayTreeManager(Node):
             )
             self.min_group_size_to_split = 3
 
-    # ------------------------------------------------------------------
-    # Initialization
-    # ------------------------------------------------------------------
-
     def _init_state(self):
         self.states: Dict[str, RobotState] = {}
         self.phase = 'WAIT_FOR_STATES'
@@ -202,10 +160,6 @@ class RelayTreeManager(Node):
         )
         self.create_timer(1.0 / self.publish_rate_hz, self.control_loop)
 
-    # ------------------------------------------------------------------
-    # ROS callbacks
-    # ------------------------------------------------------------------
-
     def state_callback(self, msg: RobotState):
         self.states[msg.robot_name] = msg
 
@@ -214,11 +168,8 @@ class RelayTreeManager(Node):
         assignments = self._build_assignments()
         self._publish_assignments(assignments)
 
-    # ------------------------------------------------------------------
-    # Tree update
-    # ------------------------------------------------------------------
-
     def _update_tree(self):
+        # Initializes the tree once all required robot states are available.
         if not self._have_required_states():
             self.phase = 'WAIT_FOR_STATES'
             return
@@ -230,7 +181,6 @@ class RelayTreeManager(Node):
         if self.phase != 'RUNNING':
             return
 
-        # Iterate over a copy because splitting modifies active_groups.
         for group_id in list(self.active_groups.keys()):
             group = self.active_groups.get(group_id)
             if group is None:
@@ -240,6 +190,7 @@ class RelayTreeManager(Node):
                 self._split_group(group)
 
     def _initialize_tree(self):
+        # Chooses the root relay and creates the first moving group.
         ordered_names = self._order_names_for_relay_selection(
             self.robot_names,
             self.initial_leader_name,
@@ -261,8 +212,6 @@ class RelayTreeManager(Node):
 
         if self.initial_leader_name in moving_names:
             leader_name = self.initial_leader_name
-            # Keep explicit chain order, but ensure the configured initial leader
-            # is at the front of group_0.
             moving_names = [leader_name] + [
                 name for name in moving_names
                 if name != leader_name
@@ -300,15 +249,7 @@ class RelayTreeManager(Node):
         )
 
     def _split_distance_for_group(self, group: ActiveGroup) -> float:
-        """
-        Use a different split distance for the first split vs later splits.
-
-        branch_depth == 1:
-        first moving group from the root relay.
-
-        branch_depth >= 2:
-        child groups after the first split.
-        """
+        # Allows different split distances for the first split and later splits.
         if group.branch_depth <= 1 and self.first_split_distance_m > 0.0:
             return self.first_split_distance_m
 
@@ -318,6 +259,7 @@ class RelayTreeManager(Node):
         return self.split_distance_m
 
     def _group_should_split(self, group: ActiveGroup) -> bool:
+        # Checks whether a group is old, large, deep, and stable enough to split.
         if len(group.robot_names) < self.min_group_size_to_split:
             return False
 
@@ -357,6 +299,7 @@ class RelayTreeManager(Node):
         return True
 
     def _group_stable_for_split(self, group: ActiveGroup):
+        # Prevents splitting while the follower chain is still stretched out.
         sorted_names = self._order_names_for_relay_selection(
             group.robot_names,
             group.leader_name,
@@ -370,9 +313,6 @@ class RelayTreeManager(Node):
         if parent_relay is None:
             return False, 'missing parent relay state'
 
-        # 1) Neighbor gaps in the current group must not be huge.
-        # This prevents splitting while the leader has run far ahead but
-        # followers are still forming the line.
         worst_gap = 0.0
         for a_name, b_name in zip(sorted_names[:-1], sorted_names[1:]):
             a = self.states.get(a_name)
@@ -390,8 +330,6 @@ class RelayTreeManager(Node):
                 f'{self.max_pair_gap_for_split_m:.2f}m',
             )
 
-        # 2) The rearmost robot, which will become the relay, must have made
-        # meaningful progress from the parent relay.
         relay_candidate = self.states.get(sorted_names[-1])
         if relay_candidate is None:
             return False, 'missing relay candidate state'
@@ -413,6 +351,7 @@ class RelayTreeManager(Node):
         return True, 'stable'
 
     def _split_group(self, group: ActiveGroup):
+        # Turns the group tail into a relay and creates two child groups.
         sorted_names = self._order_names_for_relay_selection(
             group.robot_names,
             group.leader_name,
@@ -439,11 +378,8 @@ class RelayTreeManager(Node):
             role='relay',
         )
 
-        # Remove the old active group.
         self.active_groups.pop(group.group_id, None)
 
-        # Split all remaining robots into left/right child groups.
-        # For len(remaining)==2 this gives one robot left and one robot right.
         mid = max(1, math.ceil(len(remaining) / 2.0))
         left_names = remaining[:mid]
         right_names = remaining[mid:]
@@ -498,7 +434,6 @@ class RelayTreeManager(Node):
         if not names:
             return
 
-        # Keep front-most robot as leader after sorting by the new heading.
         sorted_names = self._sort_front_to_back(
             names,
             names[0],
@@ -521,17 +456,13 @@ class RelayTreeManager(Node):
             created_ns=created_ns,
         )
 
-    # ------------------------------------------------------------------
-    # Assignment building
-    # ------------------------------------------------------------------
-
     def _build_assignments(self) -> Dict[str, dict]:
+        # Builds the role assignment dictionary published to all robots.
         if self.phase == 'WAIT_FOR_STATES':
             return self._waiting_assignments()
 
         assignments: Dict[str, dict] = {}
 
-        # Relay assignments.
         for relay in self.relays.values():
             assignments[relay.robot_name] = {
                 'role': relay.role,
@@ -544,11 +475,9 @@ class RelayTreeManager(Node):
                 'active': True,
             }
 
-        # Active group assignments.
         for group in self.active_groups.values():
             self._assign_active_group(assignments, group)
 
-        # Safety fallback for any robot missing from assignments.
         for name in self.robot_names:
             if name not in assignments:
                 assignments[name] = {
@@ -565,10 +494,7 @@ class RelayTreeManager(Node):
         return assignments
 
     def _waiting_assignments(self) -> Dict[str, dict]:
-        # Important:
-        # While waiting for all robot states, do NOT assign follower/leader roles.
-        # With require_formation_ready=False, followers can start moving immediately.
-        # So during WAIT_FOR_STATES we explicitly hold every robot idle.
+        # Keeps all robots idle until the manager has all required states.
         assignments: Dict[str, dict] = {}
 
         for name in self.robot_names:
@@ -663,10 +589,6 @@ class RelayTreeManager(Node):
             'active': True,
         }
 
-    # ------------------------------------------------------------------
-    # Geometry helpers
-    # ------------------------------------------------------------------
-
     def _have_required_states(self) -> bool:
         return all(name in self.states for name in self.robot_names)
 
@@ -676,24 +598,13 @@ class RelayTreeManager(Node):
         leader_name: str,
         heading_deg: float,
     ) -> List[str]:
-        """
-        Return names from front to back for relay decisions.
-
-        In 'chain_tail' mode, the tail of the assigned chain/group order becomes
-        the relay. This avoids geometry tie-breaking choosing robot8 instead of
-        robot9 in a 3x3 grid where several robots share the same rear x value.
-
-        In 'geometry' mode, keep the old projection-based behavior.
-        """
+        # Orders robots from front to back for relay selection.
         valid = [name for name in names if name in self.states]
 
         if not valid:
             return []
 
         if self.relay_selection_mode == 'chain_tail':
-            # For the root group, explicit_chain_order comes from the launch.
-            # For child groups, group.robot_names already preserves the parent
-            # split ordering, so using names directly gives a deterministic tail.
             if self.explicit_chain_order:
                 ordered = [
                     name for name in self.explicit_chain_order
@@ -731,6 +642,7 @@ class RelayTreeManager(Node):
         leader_name: str,
         heading_deg: float,
     ) -> List[str]:
+        # Sorts robots by their projection along the group's heading.
         leader = self.states.get(leader_name)
         if leader is None:
             return [name for name in names if name in self.states]
@@ -753,10 +665,6 @@ class RelayTreeManager(Node):
         match = re.search(r'\d+', name)
         return int(match.group()) if match else 999
 
-    # ------------------------------------------------------------------
-    # Publish
-    # ------------------------------------------------------------------
-
     def _publish_assignments(self, assignments: Dict[str, dict]):
         if self.phase != self.last_phase_log:
             self.last_phase_log = self.phase
@@ -765,7 +673,6 @@ class RelayTreeManager(Node):
         msg = String()
         msg.data = json.dumps(assignments, sort_keys=True)
 
-        # Publish continuously because late subscribers need current assignments.
         self.assignment_pub.publish(msg)
 
 

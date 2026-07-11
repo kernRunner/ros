@@ -1,3 +1,5 @@
+# Controls follower robots so each robot follows its predecessor in the assigned chain.
+
 import json
 import math
 import re
@@ -15,25 +17,6 @@ from swarm_control.core.math_utils import normalize_angle, quaternion_to_yaw
 
 
 class PathFollower(Node):
-    """
-    Simplified chain follower.
-
-    Main responsibility:
-      - Followers maintain a chain behind their predecessor.
-      - robot2 follows the leader.
-      - robot3 follows robot2.
-      - robot4 follows robot3.
-      - No leader-path arc-length sampling.
-      - No line-hold controller.
-      - No resync controller.
-
-    Why this version is simpler:
-      - Formation is based on predecessor spacing, not historical path slots.
-      - There is only one steering controller.
-      - Followers start earlier using a configurable startup gap ratio.
-      - The file still publishes /swarm/chain_order for debug/safety-filter use.
-    """
-
     def __init__(self):
         super().__init__('path_follower')
 
@@ -44,17 +27,11 @@ class PathFollower(Node):
 
         self.get_logger().info(f'[{self.robot_name}] sequential path_follower started')
 
-    # ------------------------------------------------------------------
-    # Parameters
-    # ------------------------------------------------------------------
-
     def _declare_parameters(self):
         self.declare_parameter('robot_name', 'robot2')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel_raw')
         self.declare_parameter('mission_command_topic', '/swarm/mission_command')
 
-        # Kept for launch-file compatibility. This simplified follower does not
-        # subscribe to /swarm/leader_path.
         self.declare_parameter('path_topic', '/swarm/leader_path')
 
         self.declare_parameter('spawn_x', 0.0)
@@ -77,13 +54,8 @@ class PathFollower(Node):
         self.declare_parameter('very_far_gap_m', 2.00)
         self.declare_parameter('catchup_speed_boost', 1.50)
 
-        # Followers are released once their predecessor opens enough space.
-        # Old code used desired_follow_distance_m * 0.95, which made startup slow.
         self.declare_parameter('startup_gap_ratio', 0.60)
 
-        # Sequential startup:
-        # Followers do not all move at once. A robot may only start after the
-        # robots in front of it have opened spacing and are roughly aligned.
         self.declare_parameter('sequential_start_enabled', True)
         self.declare_parameter('sequential_slot_delay_sec', 0.8)
         self.declare_parameter('sequential_front_pair_gap_ratio', 0.80)
@@ -91,26 +63,14 @@ class PathFollower(Node):
         self.declare_parameter('sequential_self_alignment_tolerance_rad', 0.45)
         self.declare_parameter('sequential_prealign_enabled', True)
         self.declare_parameter('sequential_prealign_angular_gain', 0.65)
-
-        # Simple sequential release:
-        # follower i may only start after predecessor i-1 has actually moved
-        # this far from its initial position. This prevents all followers from
-        # releasing at once after the leader_start_delay_sec has elapsed.
         self.declare_parameter('sequential_predecessor_move_m', 0.25)
 
         self.declare_parameter('lock_chain_order', True)
-
-        # In a compact grid spawn, projection-based ordering can change when the
-        # leader turns slightly. For stable launch behavior, use robot name order:
-        # robot1 -> robot2 -> robot3 -> ...
         self.declare_parameter('chain_order_mode', 'robot_name')
         self.declare_parameter('explicit_chain_order', [''])
 
-        # Relay-tree mode: assignments from relay_tree_manager are enough to start.
-        # Keep this False unless you explicitly want formation_manager to gate movement.
         self.declare_parameter('require_formation_ready', False)
 
-        # Kept for launch-file compatibility, but unused in this simplified file.
         self.declare_parameter('lookahead_m', 0.25)
         self.declare_parameter('goal_tolerance_m', 0.06)
         self.declare_parameter('min_path_length_m', 0.25)
@@ -133,8 +93,6 @@ class PathFollower(Node):
         self.declare_parameter('hold_gap_deadband_m', 0.12)
         self.declare_parameter('hold_heading_deadband_rad', 0.20)
 
-        # Smooth following instead of start/stop behavior.
-        # If the predecessor is moving slowly, followers try to match that speed.
         self.declare_parameter('speed_match_enabled', True)
         self.declare_parameter('speed_match_gain', 0.85)
         self.declare_parameter('min_creep_speed', 0.025)
@@ -229,10 +187,6 @@ class PathFollower(Node):
             self.get_parameter('command_smoothing_alpha_angular').value
         )
 
-    # ------------------------------------------------------------------
-    # Initialization
-    # ------------------------------------------------------------------
-
     def _init_state(self):
         self.world_x = 0.0
         self.world_y = 0.0
@@ -258,10 +212,6 @@ class PathFollower(Node):
         self.last_linear_cmd = 0.0
         self.last_angular_cmd = 0.0
 
-        # Mission command state:
-        #   explore     -> normal chain following
-        #   stop        -> full stop
-        #   return_home -> keep following leader while leader returns home
         self.mission_mode = 'explore'
         self.last_mission_log_ns = 0
 
@@ -279,22 +229,8 @@ class PathFollower(Node):
 
         self.create_timer(0.1, self.control_loop)
 
-    # ------------------------------------------------------------------
-    # Callbacks
-    # ------------------------------------------------------------------
-
     def mission_command_callback(self, msg: String):
-        """
-        Accept plain text:
-          explore
-          stop
-          return_home
-
-        or small JSON:
-          {"mode":"explore"}
-          {"mode":"stop"}
-          {"mode":"return_home"}
-        """
+        # Accepts plain text or JSON-like mission commands.
         raw = (msg.data or '').strip()
 
         if not raw:
@@ -324,21 +260,17 @@ class PathFollower(Node):
 
         self.mission_mode = mode
 
-        # Important: clear smoothing memory so stop is immediate.
         if mode == 'stop':
             self.last_linear_cmd = 0.0
             self.last_angular_cmd = 0.0
             self.publish_cmd(0.0, 0.0)
 
-        # On resume, require sequential release again only if this robot has not
-        # previously been released. Do not reset startup_released here because
-        # that would unnecessarily rebuild the whole chain.
         self.get_logger().warn(
             f'[{self.robot_name}] mission mode changed to {self.mission_mode}'
         )
 
     def odom_callback(self, msg: Odometry):
-        # Fallback only, before /swarm/robot_states for this robot arrives.
+        # Uses odometry only until this robot's swarm state is available.
         if self.have_self_state:
             return
 
@@ -369,9 +301,6 @@ class PathFollower(Node):
         self.group_id = msg.group_id
         self.is_relay = msg.is_relay or msg.role in ('root_relay', 'relay')
 
-        # Relay-tree mode:
-        # - group_leader is a leader.
-        # - root_relay / relay must never be treated as a moving leader.
         self.is_leader = (
             msg.role in ('leader', 'group_leader')
             and msg.leader_id == self.robot_name
@@ -386,10 +315,7 @@ class PathFollower(Node):
             self._reset_for_new_leader(old_leader, self.current_leader_id)
 
     def formation_ready_cb(self, msg: Bool):
-        # In relay-tree mode the relay_tree_manager assignment is the movement gate.
-        # If require_formation_ready is False, ignore formation_manager completely.
-        # Otherwise an early/stale formation_ready message can lock a bad chain order
-        # while the robots are still side-by-side at spawn.
+        # Optional old formation gate; normally disabled in relay-tree mode.
         if not self.require_formation_ready:
             return
 
@@ -422,10 +348,6 @@ class PathFollower(Node):
             f'[{self.robot_name}] leader changed: {old_leader} -> {new_leader}'
         )
 
-    # ------------------------------------------------------------------
-    # Main loop
-    # ------------------------------------------------------------------
-
     def control_loop(self):
         if not self.have_self_state:
             self.publish_cmd(0.0, 0.0)
@@ -438,14 +360,10 @@ class PathFollower(Node):
             self._log_mission_hold()
             return
 
-        # Relays are physical breadcrumbs: always stay stopped.
         if self.is_relay or self.current_role in ('root_relay', 'relay'):
             self.publish_cmd(0.0, 0.0)
             return
 
-        # In relay-tree mode the role assignment is the formation gate.
-        # The old formation_manager can still be used by setting
-        # require_formation_ready:=True.
         if self.require_formation_ready and not self.formation_done:
             return
 
@@ -488,6 +406,7 @@ class PathFollower(Node):
             tx, ty, distance_to_predecessor = target
             linear, angular = self.compute_control(tx, ty)
             linear = self.apply_gap_speed_control(linear, distance_to_predecessor, predecessor)
+
         linear *= self.robot_collision_scale(predecessor)
 
         linear = max(self.too_close_reverse_speed, min(self.max_linear_speed, linear))
@@ -507,11 +426,8 @@ class PathFollower(Node):
             f'{self.mission_mode}'
         )
 
-    # ------------------------------------------------------------------
-    # Chain order
-    # ------------------------------------------------------------------
-
     def get_chain_order(self) -> List[str]:
+        # Returns the active chain order for this robot's current group.
         if self.lock_chain_order and self.locked_order:
             return self.locked_order
 
@@ -551,14 +467,11 @@ class PathFollower(Node):
         if not valid_names:
             return []
 
-        # Preserve the explicit order from the launch, but only keep robots
-        # currently belonging to this active group.
         ordered = [
             name for name in self.explicit_chain_order
             if name in valid_names
         ]
 
-        # Safety fallback: include any group robot missing from the explicit list.
         missing = sorted(
             list(valid_names - set(ordered)),
             key=self.robot_number,
@@ -631,8 +544,6 @@ class PathFollower(Node):
         if not robots:
             return []
 
-        # Sort robots along the current leader heading.
-        # Robots in front of the leader heading axis come first.
         fx = math.cos(leader.yaw)
         fy = math.sin(leader.yaw)
 
@@ -703,28 +614,12 @@ class PathFollower(Node):
         match = re.search(r'\d+', name)
         return int(match.group()) if match else 999
 
-    # ------------------------------------------------------------------
-    # Startup release
-    # ------------------------------------------------------------------
-
     def startup_release_allowed(
         self,
         order: List[str],
         predecessor: RobotState,
     ) -> Tuple[bool, Tuple[float, float]]:
-        """
-        Gate startup so the chain forms one robot at a time.
-
-        Important change:
-          Do NOT use only absolute slot delay from node startup. With a delayed
-          leader, all slot delays expire before robot1 starts, so every follower
-          releases together.
-
-        New simple rule:
-          robot i starts only after its predecessor has physically moved a small
-          distance from its initial spawn/assignment position. This creates:
-            robot1 moves -> robot2 moves -> robot3 moves -> robot6 moves -> ...
-        """
+        # Releases followers one by one after their predecessor has moved.
         if self.startup_released:
             return True, (0.0, 0.0)
 
@@ -740,7 +635,6 @@ class PathFollower(Node):
             self.startup_released = True
             return True, (0.0, 0.0)
 
-        # The key gate: wait until the predecessor has actually moved.
         moved, moved_dist = self.predecessor_has_moved(predecessor)
         if not moved:
             self._log_startup_wait(
@@ -749,9 +643,6 @@ class PathFollower(Node):
             )
             return False, (0.0, 0.0)
 
-        # Small per-slot delay after predecessor movement condition is true.
-        # This avoids identical release on the same timer tick, but does not
-        # dominate behavior.
         now_ns = self.get_clock().now().nanoseconds
         elapsed_sec = (now_ns - self.group_join_ns) / 1e9
         required_delay = min(my_index * self.sequential_slot_delay_sec, 1.5)
@@ -775,8 +666,6 @@ class PathFollower(Node):
             )
             return False, (0.0, 0.0)
 
-        # Optional prealignment. For the 3x3 S-order spawn this should usually
-        # stay disabled in the launch to avoid rotation deadlocks.
         if self.sequential_prealign_enabled:
             aligned, angular = self.self_aligned_for_start(predecessor)
             if not aligned:
@@ -802,55 +691,10 @@ class PathFollower(Node):
 
         return moved_dist >= self.sequential_predecessor_move_m, moved_dist
 
-    def front_chain_ready_for_my_turn(
-        self,
-        order: List[str],
-        my_index: int,
-    ) -> Tuple[bool, str]:
-        """
-        Check only the chain in front of this robot.
-
-        For robot4, this checks robot1-robot2 and robot2-robot3.
-        robot4 remains still until those pairs are reasonably spaced/aligned.
-        """
-        required_gap = (
-            self.desired_follow_distance_m
-            * self.sequential_front_pair_gap_ratio
-        )
-
-        for j in range(1, my_index):
-            front_name = order[j - 1]
-            back_name = order[j]
-
-            front = self.other_robots.get(front_name)
-            back = self.other_robots.get(back_name)
-
-            if front is None or back is None:
-                return False, f'waiting state for {front_name}/{back_name}'
-
-            gap = math.hypot(front.x - back.x, front.y - back.y)
-            if gap < required_gap:
-                return (
-                    False,
-                    f'waiting front pair gap {front_name}->{back_name}: '
-                    f'{gap:.2f}/{required_gap:.2f}m',
-                )
-
-            yaw_error = abs(normalize_angle(front.yaw - back.yaw))
-            if yaw_error > self.sequential_front_alignment_tolerance_rad:
-                return (
-                    False,
-                    f'waiting front pair align {front_name}->{back_name}: '
-                    f'{yaw_error:.2f}rad',
-                )
-
-        return True, 'front chain ready'
-
     def self_aligned_for_start(
         self,
         predecessor: RobotState,
     ) -> Tuple[bool, float]:
-        # Desired target slot behind predecessor, along predecessor heading.
         tx = predecessor.x - self.desired_follow_distance_m * math.cos(predecessor.yaw)
         ty = predecessor.y - self.desired_follow_distance_m * math.sin(predecessor.yaw)
 
@@ -866,7 +710,6 @@ class PathFollower(Node):
     def _log_startup_wait(self, reason: str):
         now_ns = self.get_clock().now().nanoseconds
 
-        # Throttle, otherwise startup gating can spam logs.
         if now_ns - self.last_startup_wait_log_ns < 2_000_000_000:
             return
 
@@ -874,12 +717,7 @@ class PathFollower(Node):
         self.get_logger().info(f'[{self.robot_name}] sequential startup: {reason}')
 
     def startup_space_available(self, predecessor: RobotState) -> bool:
-        """
-        Followers start once the predecessor opened enough space.
-
-        This is intentionally less strict than the old 0.95 ratio.
-        A lower ratio makes line formation much faster.
-        """
+        # Simple non-sequential startup gate based only on predecessor gap.
         if self.startup_released:
             return True
 
@@ -900,43 +738,11 @@ class PathFollower(Node):
 
         return False
 
-    # ------------------------------------------------------------------
-    # Target generation
-    # ------------------------------------------------------------------
-
-    def should_hold_position(self, predecessor: RobotState) -> bool:
-        """
-        If spacing is already good and the predecessor is slow/stopped,
-        do not keep rotating to perfectly aim at the target point.
-
-        This prevents follower wiggle during launch, waiting, and obstacle slowdown.
-        """
-        dx = predecessor.x - self.world_x
-        dy = predecessor.y - self.world_y
-        distance = math.hypot(dx, dy)
-
-        gap_error = distance - self.desired_follow_distance_m
-
-        if abs(gap_error) > self.hold_gap_deadband_m:
-            return False
-
-        predecessor_speed = abs(predecessor.linear_speed)
-
-        if predecessor_speed > 0.03:
-            return False
-
-        angle_to_predecessor = math.atan2(dy, dx)
-        heading_error = normalize_angle(angle_to_predecessor - self.yaw)
-
-        if abs(heading_error) > self.hold_heading_deadband_rad:
-            return False
-
-        return True
-
     def get_predecessor_target(
         self,
         predecessor: RobotState,
     ) -> Optional[Tuple[float, float, float]]:
+        # Targets a slot behind the predecessor using the predecessor heading.
         dx = predecessor.x - self.world_x
         dy = predecessor.y - self.world_y
         distance = math.hypot(dx, dy)
@@ -946,24 +752,13 @@ class PathFollower(Node):
         if distance < min_distance:
             return None
 
-        # Do not use a hard upper deadband here.
-        # A hard "return None" near the target creates start/stop motion when
-        # the predecessor is moving slowly. Smooth hold/speed matching is handled
-        # in compute_spacing_hold_command() and apply_gap_speed_control().
-        # Target a slot behind the predecessor along the predecessor heading.
-        # This is much more stable for the 2-row spawn layout than targeting
-        # the radial line between follower and predecessor. The old radial target
-        # could pull one robot sideways out of the chain during startup.
         tx = predecessor.x - self.desired_follow_distance_m * math.cos(predecessor.yaw)
         ty = predecessor.y - self.desired_follow_distance_m * math.sin(predecessor.yaw)
 
         return tx, ty, distance
 
-    # ------------------------------------------------------------------
-    # Control
-    # ------------------------------------------------------------------
-
     def compute_control(self, tx: float, ty: float) -> Tuple[float, float]:
+        # Computes velocity toward the target slot.
         dx = tx - self.world_x
         dy = ty - self.world_y
         distance_to_target = math.hypot(dx, dy)
@@ -973,8 +768,6 @@ class PathFollower(Node):
 
         linear = min(self.linear_gain * distance_to_target, self.max_linear_speed)
 
-        # Less conservative than the old version, so robots keep moving while
-        # turning into formation.
         abs_err = abs(heading_error)
 
         if abs_err > 1.30:
@@ -984,7 +777,6 @@ class PathFollower(Node):
         elif abs_err > 0.50:
             linear *= 0.85
 
-        # If almost at target, stop instead of jittering.
         if distance_to_target < 0.04:
             linear = 0.0
 
@@ -996,14 +788,7 @@ class PathFollower(Node):
         self,
         predecessor: RobotState,
     ) -> Tuple[float, float]:
-        """
-        Smooth command for the spacing band.
-
-        Old behavior published exactly zero when the follower was close to the
-        desired distance. That caused stop/go motion when the leader crawled
-        around obstacles. This method lets the follower creep at approximately
-        the predecessor speed instead of repeatedly stopping and restarting.
-        """
+        # Smoothly holds spacing instead of repeatedly stopping and starting.
         dx = predecessor.x - self.world_x
         dy = predecessor.y - self.world_y
         distance = math.hypot(dx, dy)
@@ -1011,11 +796,9 @@ class PathFollower(Node):
 
         predecessor_speed = max(0.0, float(predecessor.linear_speed))
 
-        # If predecessor is basically stopped and spacing is good, hold still.
         if abs(gap_error) <= self.hold_gap_deadband_m and predecessor_speed < 0.025:
             return 0.0, 0.0
 
-        # If predecessor is moving slowly, match it instead of pulsing.
         if self.speed_match_enabled and gap_error >= -self.follow_deadband_m:
             matched = predecessor_speed * self.speed_match_gain
 
@@ -1026,8 +809,6 @@ class PathFollower(Node):
         else:
             linear = 0.0
 
-        # Only rotate if we are badly misaligned. Small angular corrections while
-        # waiting are the source of visible wiggle.
         angle_to_predecessor = math.atan2(dy, dx)
         heading_error = normalize_angle(angle_to_predecessor - self.yaw)
 
@@ -1044,21 +825,18 @@ class PathFollower(Node):
         distance_to_predecessor: float,
         predecessor: RobotState,
     ) -> float:
+        # Adjusts forward speed based on the current gap to the predecessor.
         gap_error = distance_to_predecessor - self.desired_follow_distance_m
         predecessor_speed = max(0.0, float(predecessor.linear_speed))
 
-        # Too close: stop moving forward.
         if gap_error < -self.follow_deadband_m:
             return 0.0
 
-        # Slightly close: move no faster than predecessor, so we do not close the
-        # gap and then stop again.
         if gap_error < 0.0:
             if self.speed_match_enabled and predecessor_speed > 0.025:
                 return min(linear, max(self.min_creep_speed, predecessor_speed * 0.85))
             return min(linear, self.max_linear_speed * 0.25)
 
-        # Inside the good spacing band: speed match instead of hard stop/start.
         if gap_error < self.follow_deadband_m:
             if self.speed_match_enabled and predecessor_speed > 0.025:
                 return min(
@@ -1068,7 +846,6 @@ class PathFollower(Node):
 
             return min(linear, self.max_linear_speed * 0.35)
 
-        # Far away: maintain at least a useful catch-up speed.
         if distance_to_predecessor > self.very_far_gap_m:
             return min(
                 self.max_linear_speed,
@@ -1083,14 +860,11 @@ class PathFollower(Node):
 
         return linear
 
-    # ------------------------------------------------------------------
-    # Safety around other robots
-    # ------------------------------------------------------------------
-
     def predecessor_guard(
         self,
         predecessor: Optional[RobotState],
     ) -> Optional[Tuple[float, float]]:
+        # Prevents the follower from driving into its predecessor.
         if predecessor is None:
             return None
 
@@ -1111,6 +885,7 @@ class PathFollower(Node):
         return 0.0, angular
 
     def robot_collision_scale(self, predecessor: Optional[RobotState]) -> float:
+        # Slows this robot down when another nearby robot is too close.
         predecessor_name = predecessor.robot_name if predecessor else None
         nearest = 999.0
 
@@ -1137,15 +912,12 @@ class PathFollower(Node):
 
         return 1.0
 
-    # ------------------------------------------------------------------
-    # Publishing
-    # ------------------------------------------------------------------
-
     def smooth_value(self, old: float, new: float, alpha: float) -> float:
         alpha = max(0.0, min(1.0, alpha))
         return (alpha * new) + ((1.0 - alpha) * old)
 
     def publish_cmd(self, linear: float, angular: float):
+        # Smooths and publishes the final velocity command.
         self.last_linear_cmd = self.smooth_value(
             self.last_linear_cmd,
             linear,
@@ -1157,7 +929,6 @@ class PathFollower(Node):
             self.command_smoothing_alpha_angular,
         )
 
-        # Avoid tiny residual commands after smoothing.
         if abs(linear) < 1e-4 and abs(self.last_linear_cmd) < 0.01:
             self.last_linear_cmd = 0.0
         if abs(angular) < 1e-4 and abs(self.last_angular_cmd) < 0.03:
