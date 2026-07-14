@@ -1,4 +1,6 @@
 # Publishes this robot's swarm state and applies relay-tree role assignments.
+# The node reads the robot pose, mission mode, and role assignment messages, then updates the robot's current role, group, leader, parent relay, branch heading, and active state.
+# Note: Parts of this file were developed and refined with the help of an AI/LLM assistant; the final code was reviewed, adapted, and integrated into the ROS 2 swarm project by the project team.
 
 from typing import Dict
 import json
@@ -27,14 +29,14 @@ class SwarmMember(Node):
     def __init__(self):
         super().__init__('swarm_member')
 
-        self.declare_parameters()
-        self.read_parameters()
-        self.init_state()
-        self.init_ros_interfaces()
+        self._declare_parameters()
+        self._read_parameters()
+        self._init_state()
+        self._init_ros_interfaces()
 
         self.get_logger().info(f'[{self.robot_name}] swarm_member started')
 
-    def declare_parameters(self):
+    def _declare_parameters(self):
         self.declare_parameter('robot_name', 'robot1')
         self.declare_parameter('state_timeout_sec', 1.5)
         self.declare_parameter('publish_rate_hz', 5.0)
@@ -49,7 +51,7 @@ class SwarmMember(Node):
         self.declare_parameter('use_role_assignments', True)
         self.declare_parameter('role_assignment_topic', '/swarm/role_assignments')
 
-    def read_parameters(self):
+    def _read_parameters(self):
         self.robot_name = self.get_parameter('robot_name').value
         self.state_timeout_sec = float(self.get_parameter('state_timeout_sec').value)
         self.publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
@@ -76,7 +78,7 @@ class SwarmMember(Node):
             'role_assignment_topic'
         ).value
 
-    def init_state(self):
+    def _init_state(self):
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
@@ -105,7 +107,7 @@ class SwarmMember(Node):
         self.role_assignments = {}
         self.have_assignment = False
 
-    def init_ros_interfaces(self):
+    def _init_ros_interfaces(self):
         self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.create_subscription(
             LaserScan,

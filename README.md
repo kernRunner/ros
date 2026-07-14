@@ -72,6 +72,9 @@ The most important topics are:
 After building the workspace and sourcing the setup file, the main swarm exploration system can be started with:
 
 ```bash
+cd ~/Project
+colcon build --packages-select swarm_interfaces swarm_control swarm_gazebo --symlink-install
+source install/setup.bash
 ros2 launch swarm_gazebo multi_spawn.launch.py
 ```
 

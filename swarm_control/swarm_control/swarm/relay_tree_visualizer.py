@@ -18,14 +18,14 @@ class RelayTreeVisualizer(Node):
     def __init__(self):
         super().__init__('relay_tree_visualizer')
 
-        self.declare_parameters()
-        self.read_parameters()
-        self.init_state()
-        self.init_ros_interfaces()
+        self._declare_parameters()
+        self._read_parameters()
+        self._init_state()
+        self._init_ros_interfaces()
 
         self.get_logger().info('[relay_tree_visualizer] started')
 
-    def declare_parameters(self):
+    def _declare_parameters(self):
         self.declare_parameter('state_topic', '/swarm/robot_states')
         self.declare_parameter('marker_topic', '/swarm/relay_tree_markers')
         self.declare_parameter('frame_id', 'world')
@@ -41,7 +41,7 @@ class RelayTreeVisualizer(Node):
         self.declare_parameter('show_parent_relay_links', True)
         self.declare_parameter('show_text_labels', True)
 
-    def read_parameters(self):
+    def _read_parameters(self):
         self.state_topic = self.get_parameter('state_topic').value
         self.marker_topic = self.get_parameter('marker_topic').value
         self.frame_id = self.get_parameter('frame_id').value
@@ -65,11 +65,11 @@ class RelayTreeVisualizer(Node):
         )
         self.show_text_labels = bool(self.get_parameter('show_text_labels').value)
 
-    def init_state(self):
+    def _init_state(self):
         self.states: Dict[str, RobotState] = {}
         self.last_seen_ns: Dict[str, int] = {}
 
-    def init_ros_interfaces(self):
+    def _init_ros_interfaces(self):
         self.create_subscription(
             RobotState,
             self.state_topic,

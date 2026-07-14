@@ -1,4 +1,6 @@
 # Controls follower robots so each robot follows its predecessor in the assigned chain.
+# The node reads swarm states and relay-tree role assignments, computes a target position behind the predecessor, and uses distance deadbands plus smoothed velocity commands for stable chain movement.
+# Note: Parts of this file were developed and refined with the help of an AI/LLM assistant; the final code was reviewed, adapted, and integrated into the ROS 2 swarm project by the project team.
 
 import json
 import math

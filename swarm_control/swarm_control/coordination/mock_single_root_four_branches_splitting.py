@@ -1,4 +1,6 @@
-# Runs an RViz-only mock swarm with one root relay and four branches that can split.
+# Runs an RViz-only mock swarm with one root relay and four starting branches that move and split in software.
+# The node publishes simulated RobotState messages for 18 robots, including branch leaders, followers, relay robots, and the fixed root relay, so the relay-tree visualization can be tested without Gazebo.
+# Note: Parts of this file were developed and refined with the help of an AI/LLM assistant; the final code was reviewed, adapted, and integrated into the ROS 2 swarm project by the project team.
 
 import math
 from typing import Dict, List, Tuple

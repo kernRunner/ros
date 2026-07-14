@@ -1,6 +1,5 @@
-<!-- Gazebo world for the Mars swarm exploration simulation. -->
-
 <?xml version="1.0" ?>
+<!-- Gazebo world for the Mars swarm exploration simulation. -->
 
 <sdf version="1.8">
   <world name="tree_exploration_test">

@@ -1,4 +1,6 @@
 # Manages relay-tree role assignments and recursive group splitting for the swarm.
+# The node reads all RobotState messages, selects relays and group leaders, splits active groups into new branches, and publishes role assignments for every robot.
+# Note: Parts of this file were developed and refined with the help of an AI/LLM assistant; the final code was reviewed, adapted, and integrated into the ROS 2 swarm project by the project team.
 
 import json
 import math

@@ -1,3 +1,7 @@
+# Controls group-leader robots during relay-tree exploration, obstacle avoidance, and return-home behavior.
+# The node reads odometry, lidar scans, swarm states, and mission commands, then publishes velocity commands for active group leaders while relays and followers stay controlled elsewhere.
+# Note: Parts of this file were developed and refined with the help of an AI/LLM assistant; the final code was reviewed, adapted, and integrated into the ROS 2 swarm project by the project team.
+
 import math
 import re
 
@@ -43,15 +47,11 @@ class TreeExplorer(Node):
 
         self.declare_parameter('leader_start_delay_sec', 15.0)
 
-        # Keep this false until basic movement is stable.
         self.declare_parameter('leader_wait_for_chain', False)
         self.declare_parameter('leader_slow_chain_gap_m', 2.00)
         self.declare_parameter('leader_max_chain_gap_m', 2.60)
         self.declare_parameter('leader_wait_turn_allowed', True)
 
-        # Relay leash:
-        # Keep each moving group leader within communication distance of its
-        # parent relay. This prevents branches from outrunning the relay tree.
         self.declare_parameter('relay_leash_enabled', True)
         self.declare_parameter('relay_slow_distance_m', 24.0)
         self.declare_parameter('relay_stop_distance_m', 30.0)
@@ -67,10 +67,6 @@ class TreeExplorer(Node):
         self.declare_parameter('obstacle_escape_enabled', True)
         self.declare_parameter('escape_front_clear_distance', 1.60)
 
-        # Return-home v1:
-        # Group leaders drive back to their parent_relay_id.
-        # Followers keep following through path_follower.
-        # Relays stay stopped for now.
         self.declare_parameter('return_home_speed', 0.08)
         self.declare_parameter('return_home_arrival_distance_m', 1.00)
         self.declare_parameter('return_home_heading_gain', 0.90)
@@ -186,10 +182,7 @@ class TreeExplorer(Node):
         self.assigned_heading_deg = 0.0
         self.is_relay = False
 
-        # Mission command state:
-        #   explore     -> normal behavior
-        #   stop        -> all leaders stop
-        #   return_home -> placeholder for next phase; stop for now
+        # Mission mode used by the leader controller.
         self.mission_mode = 'explore'
         self.last_mission_log_ns = 0
         self.last_return_home_log_ns = 0
@@ -208,10 +201,7 @@ class TreeExplorer(Node):
         self.last_relay_leash_log_ns = 0
         self.locked_chain_order = []
 
-        # Leader exploration state machine.
-        # CRUISE: follow preferred heading.
-        # AVOID_OBSTACLE: keep one selected avoidance direction until clear.
-        # REJOIN_HEADING: return to preferred heading only after obstacle is passed.
+        # Leader exploration mode.
         self.mode = 'CRUISE'
         self.avoid_turn_sign = 0.0
         self.escape_start_ns = 0
@@ -251,17 +241,7 @@ class TreeExplorer(Node):
         self.create_timer(0.1, self.control_loop)
 
     def mission_command_callback(self, msg):
-        """
-        Accept either plain text:
-          explore
-          stop
-          return_home
-
-        or small JSON:
-          {"mode":"explore"}
-          {"mode":"stop"}
-          {"mode":"return_home"}
-        """
+        # Accepts plain text commands or small JSON-like command strings.
         raw = (msg.data or '').strip()
 
         if not raw:
@@ -293,8 +273,7 @@ class TreeExplorer(Node):
         self._publish_stop()
         self.return_home_arrived = False
 
-        # Reset leader behavior when resuming exploration so obstacle/heading
-        # state does not continue from before the stop.
+        # Reset exploration state when returning from stop or return_home.
         if mode == 'explore':
             self.mode = 'CRUISE'
             self.avoid_turn_sign = 0.0
@@ -306,7 +285,7 @@ class TreeExplorer(Node):
         )
 
     def odom_callback(self, msg):
-        # Fallback only, before /swarm/robot_states for this robot arrives.
+        # Uses odometry only until this robot's shared RobotState is available.
         if self.have_self_state:
             return
 
@@ -334,17 +313,14 @@ class TreeExplorer(Node):
         self.assigned_heading_deg = msg.assigned_heading_deg
         self.is_relay = msg.is_relay
 
-        # Relay-tree mode:
-        #   - group_leader explores.
-        #   - old leader role is still accepted for backward compatibility.
-        #   - relay/root_relay must not move.
+        # Only active group leaders are allowed to move in this node.
         self.is_leader = (
             msg.role in ('leader', 'group_leader')
             and msg.leader_id == self.robot_name
             and not msg.is_relay
         )
 
-        # Use the heading assigned by relay_tree_manager.
+        # Use the branch heading assigned by the relay-tree manager.
         if self.is_leader:
             assigned_heading = math.radians(msg.assigned_heading_deg)
             if abs(normalize_angle(assigned_heading - self.preferred_heading)) > 0.01:
@@ -442,7 +418,7 @@ class TreeExplorer(Node):
             )
 
     def _compute_return_home_command(self):
-        """Return-home v1: leader drives directly to its parent relay."""
+        # Drives the group leader back to its parent relay.
         if self.return_home_arrived:
             return 0.0, 0.0
 
@@ -485,7 +461,7 @@ class TreeExplorer(Node):
         elif abs_err > 0.45:
             linear *= 0.75
 
-        # Slow down close to relay.
+        # Reduce speed when close to the parent relay.
         if distance < 2.0 * self.return_home_arrival_distance_m:
             linear *= max(0.25, distance / (2.0 * self.return_home_arrival_distance_m))
 
@@ -515,17 +491,10 @@ class TreeExplorer(Node):
         return elapsed >= self.leader_start_delay_sec
 
     def _compute_exploration_command(self):
-        """
-        Main leader behavior.
-
-        The important design rule is that tree_explorer owns normal obstacle
-        avoidance. The safety filter should only be the emergency layer after
-        this command is published.
-        """
+        # Computes normal leader movement and obstacle avoidance.
         if not self.obstacle_escape_enabled:
             return self._cruise_command()
 
-        # Any new front blockage immediately enters/continues avoidance.
         if self.front < self.front_blocked_distance:
             if self.mode != 'AVOID_OBSTACLE':
                 self._enter_avoid_mode()
@@ -540,7 +509,7 @@ class TreeExplorer(Node):
         return self._cruise_command()
 
     def _cruise_command(self):
-        """Drive along the preferred exploration heading."""
+        # Drives along the preferred exploration heading.
         heading_error = normalize_angle(self.preferred_heading - self.yaw)
 
         angular = self.heading_gain * heading_error
@@ -548,7 +517,6 @@ class TreeExplorer(Node):
 
         linear = self.forward_speed
 
-        # Side clearances are only gentle nudges in cruise mode.
         if self.left < self.side_clearance_distance:
             linear = min(linear, 0.07)
             angular -= self.side_avoid_turn_gain
@@ -560,19 +528,14 @@ class TreeExplorer(Node):
         return linear, angular
 
     def _enter_avoid_mode(self):
-        """
-        Lock one avoidance direction.
-
-        This prevents left/right oscillation when front_left and front_right
-        alternate by small amounts from scan noise or partial obstacle views.
-        """
+        # Locks one avoidance direction to avoid left/right oscillation near obstacles.
         self.mode = 'AVOID_OBSTACLE'
         self.escape_start_ns = self.get_clock().now().nanoseconds
 
         if self.front_left >= self.front_right:
-            self.avoid_turn_sign = 1.0   # turn left
+            self.avoid_turn_sign = 1.0
         else:
-            self.avoid_turn_sign = -1.0  # turn right
+            self.avoid_turn_sign = -1.0
 
         self.get_logger().info(
             f'[{self.robot_name}] obstacle avoidance started; '
@@ -580,29 +543,18 @@ class TreeExplorer(Node):
         )
 
     def _avoid_obstacle_command(self):
-        """
-        Persistent obstacle escape behavior.
-
-        While avoiding, do not try to rejoin the preferred heading. That was
-        the source of the old fight: cruise wanted the preferred heading while
-        safety/avoidance wanted to turn away.
-        """
+        # Keeps the leader moving around an obstacle until the front and side are clear.
         elapsed = (
             self.get_clock().now().nanoseconds - self.escape_start_ns
         ) / 1e9
 
-        # Still blocked in front: keep turning in the chosen direction.
         if self.front < self.front_blocked_distance:
             return 0.015, self.avoid_turn_sign * self.turn_speed
 
-        # If we turn left, the obstacle is normally on the right.
-        # If we turn right, the obstacle is normally on the left.
         obstacle_side_distance = (
             self.right if self.avoid_turn_sign > 0.0 else self.left
         )
 
-        # Only leave avoidance after the robot has moved past the obstacle,
-        # not merely after the front sector flickers clear for one cycle.
         obstacle_side_clear = (
             obstacle_side_distance > self.side_clearance_distance + 0.30
         )
@@ -617,21 +569,16 @@ class TreeExplorer(Node):
         linear = min(self.forward_speed, 0.07)
 
         if obstacle_side_distance < self.side_clearance_distance:
-            # Too close to the obstacle side: steer away.
             angular = self.avoid_turn_sign * self.side_avoid_turn_gain
-
         elif obstacle_side_distance > self.side_clearance_distance + 0.40:
-            # Getting far enough around the obstacle: gently curve back around it.
             angular = -self.avoid_turn_sign * 0.18
-
         else:
-            # Good clearance: continue forward around the obstacle.
             angular = 0.0
 
         return linear, angular
 
     def _rejoin_heading_command(self):
-        """Return to preferred heading only after a mandatory cooldown."""
+        # Blends back toward the preferred heading after obstacle avoidance.
         if self.front < self.front_blocked_distance:
             self._enter_avoid_mode()
             return self._avoid_obstacle_command()
@@ -645,11 +592,8 @@ class TreeExplorer(Node):
         heading_turn = self.heading_gain * heading_error
         heading_turn = max(-self.max_heading_turn, min(self.max_heading_turn, heading_turn))
 
-        # Mandatory cooldown:
-        # Do NOT switch back to CRUISE until this time is fully finished.
         if elapsed < self.rejoin_cooldown_sec:
             cooldown_ratio = elapsed / max(self.rejoin_cooldown_sec, 0.01)
-
             gentle_around_obstacle = -self.last_avoid_turn_sign * 0.10
 
             angular = (
@@ -660,29 +604,20 @@ class TreeExplorer(Node):
             linear = min(self.forward_speed, 0.055)
             return linear, angular
 
-        # Only after cooldown is complete may we return to normal cruise.
         if abs(heading_error) < math.radians(self.escape_rejoin_heading_error_deg):
             self.mode = 'CRUISE'
 
         linear = min(self.forward_speed, 0.065)
         return linear, heading_turn
 
-        
     def _relay_leash_speed_scale(self):
-        """
-        Slow or stop a group leader if it is too far from its parent relay.
-
-        The relay manager writes parent_relay_id into RobotState. For root-level
-        groups, this is the root relay. For child groups, this is the relay left
-        at the split point. The group leader should not outrun that parent relay.
-        """
+        # Slows or stops a group leader if it moves too far from its parent relay.
         if not self.parent_relay_id:
             return 1.0, None
 
         parent = self.other_robots.get(self.parent_relay_id)
 
         if parent is None or not parent.active:
-            # Do not freeze on missing data; keep moving but log via distance None.
             return 1.0, None
 
         distance = math.hypot(parent.x - self.x, parent.y - self.y)
@@ -825,11 +760,6 @@ class TreeExplorer(Node):
             return
 
         self.last_chain_status_log_ns = now_ns
-
-        # self.get_logger().info(
-        #     f'[{self.robot_name}] chain={" -> ".join(order)} '
-        #     f'max_gap={max_gap:.2f}m'
-        # )
 
     def robot_number(self, name):
         match = re.search(r'\d+', name)

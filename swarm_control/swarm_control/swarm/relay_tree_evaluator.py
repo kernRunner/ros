@@ -17,8 +17,8 @@ class RelayTreeEvaluator(Node):
     def __init__(self):
         super().__init__('relay_tree_evaluator')
 
-        self.declare_parameters()
-        self.read_parameters()
+        self._declare_parameters()
+        self._read_parameters()
 
         self.states: Dict[str, RobotState] = {}
         self.last_seen_ns: Dict[str, int] = {}
@@ -38,7 +38,7 @@ class RelayTreeEvaluator(Node):
 
         self.get_logger().info('[relay_tree_evaluator] started')
 
-    def declare_parameters(self):
+    def _declare_parameters(self):
         self.declare_parameter('state_topic', '/swarm/robot_states')
         self.declare_parameter('eval_topic', '/swarm/relay_tree_eval')
         self.declare_parameter('text_topic', '/swarm/relay_tree_eval_text')
@@ -57,7 +57,7 @@ class RelayTreeEvaluator(Node):
         self.declare_parameter('max_recent_events_displayed', 5)
         self.declare_parameter('max_relay_link_distance_m', 30.0)
 
-    def read_parameters(self):
+    def _read_parameters(self):
         self.state_topic = str(self.get_parameter('state_topic').value)
         self.eval_topic = str(self.get_parameter('eval_topic').value)
         self.text_topic = str(self.get_parameter('text_topic').value)
